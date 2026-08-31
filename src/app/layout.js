@@ -22,6 +22,9 @@ const anuphan = Anuphan({
 export const metadata = {
   title: "EMBOSS Production Report",
   description: "E-Production Report System",
+  icons: {
+    icon: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({ children }) {

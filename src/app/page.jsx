@@ -33,7 +33,7 @@ export default function WelcomePage() {
     },
     {
       href: "/tracking",
-      label: "ติดตามการผลิต",
+      label: "รายงานการผลิต",
       desc: "ตรวจสอบสถานะและประวัติการผลิตย้อนหลัง",
       badge: "TRACKING",
       icon: Folder,

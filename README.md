@@ -1,37 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# EMBOSS Production Report System
 
-## Getting Started
+ระบบบันทึกและจัดการข้อมูลการผลิต (E-Production Report System) พัฒนาด้วย Next.js (App Router) และ React 19
 
-First, run the development server:
+---
 
+## 📝 บันทึกการแก้ไขและอัปเดตล่าสุด (Change Log)
+
+### การสร้างและปรับปรุง Favicon / Web Icon (ล่าสุด)
+- **แหล่งที่มาของโลโก้:** อ้างอิงจากไฟล์ `public/Emboss_Logo.png`
+- **การตัดขอบและปรับขนาด (Auto-Cropping & Zoom):**
+  - วิเคราะห์และตัดขอบโปร่งใส (Transparent padding) รอบนอกของรูปต้นฉบับออก ให้เหลือเฉพาะตัวเนื้อโลโก้ (จากขนาดเดิม 439x568 px ซึ่งมีเนื้อโลโก้จริง 353x352 px)
+  - ขยายเนื้อโลโก้ให้เต็มพื้นที่แบบ 100% Fill เพื่อให้เห็นโลโก้ชัดเจน ไม่เล็กหรือจมในแท็บเบราว์เซอร์
+- **ไฟล์ที่สร้างขึ้น:**
+  - `public/favicon.ico` : ไฟล์ Favicon หลายขนาด (16x16, 32x32, 48x48, 64x64, 128x128, 256x256)
+  - `src/app/favicon.ico` : ไฟล์ Favicon สำหรับ Next.js App Router Root
+  - `src/app/icon.png` & `public/icon.png` : ไอคอนความละเอียดสูง (192x192 px) สำหรับเบราว์เซอร์สมัยใหม่และอุปกรณ์พกพา
+- **การแก้ไขโค้ด:**
+  - เพิ่มการตั้งค่า `icons: { icon: "/favicon.ico" }` ใน `metadata` ที่ไฟล์ `src/app/layout.js`
+
+---
+
+## 🚀 การเริ่มต้นใช้งาน (Getting Started)
+
+ติดตั้ง Dependencies:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+รัน Development Server (พอร์ต 6206):
+```bash
+npm run dev
+```
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+เปิดดูหน้าเว็บที่ [http://localhost:6206](http://localhost:6206)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+---
 
-## Learn More
+## 🛠️ สแต็กเทคโนโลยี (Tech Stack)
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-"# Emboss" 
+- **Framework:** Next.js 16 (App Router)
+- **Library:** React 19, Lucide React
+- **Styling:** TailwindCSS v4, Sass, Styled Components
+- **PDF & Excel:** `@react-pdf/renderer`, `xlsx`
+- **HTTP Client:** `axios`
