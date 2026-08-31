@@ -1,201 +1,244 @@
 "use client";
+
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname, useRouter } from "next/navigation";
-import { useState, useEffect } from "react";
-import { LayoutDashboard, ClipboardList, Activity, LogOut, Menu, X, ShieldCheck, Folder } from "lucide-react";
-import { getSession, logout } from "../lib/auth";
-
-const NAV = [
-  { href: "/welcome", label: "Home", icon: LayoutDashboard },
-  { href: "/dashboard", label: "Dashboard", icon: Activity },
-  { href: "/form", label: "Report", icon: ClipboardList },
-  { href: "/tracking", label: "Production tracking", icon: Folder },
-];
+import { useRouter } from "next/navigation";
+import { useState, useEffect, useRef } from "react";
+import {
+  LogOut,
+  UserCircle,
+  ChevronDown,
+} from "lucide-react";
+import {
+  getSession,
+  logout,
+  isTokenExpired,
+} from "../lib/auth";
 
 export default function AppNavbar() {
-  const pathname = usePathname();
   const router = useRouter();
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const dropdownRef = useRef(null);
 
   const [session, setSession] = useState(null);
   const [mounted, setMounted] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
-    setSession(getSession());
-  // eslint-disable-next-line react-compiler/react-compiler
-  }, []);
+  setMounted(true);
 
-  const handleLogout = () => setConfirmOpen(true);
-  const confirmLogout = () => {
-    logout();
-    router.push("/login");
+  const checkAuth = () => {
+    const currentSession = getSession();
+
+    if (!currentSession || isTokenExpired()) {
+      logout();
+      router.replace("/login");
+      return;
+    }
+
+    setSession(currentSession);
   };
 
-  const isActive = (href) => pathname === href || (href !== "/welcome" && pathname.startsWith(href));
+  checkAuth();
+}, [router]);
+
+  // กดพื้นที่ด้านนอกแล้วปิด dropdown
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(event.target)
+      ) {
+        setShowDropdown(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
+
+  const displayName = session
+    ? `${session.firstName || ""} ${session.lastName || ""}`.trim()
+    : "Guest";
+
+  const handleLogout = () => {
+    setShowDropdown(false);
+    setConfirmOpen(true);
+  };
+
+  const confirmLogout = () => {
+    logout();
+    setSession(null);
+    setConfirmOpen(false);
+    router.push("/login");
+  };
 
   return (
     <>
       <header className="fixed top-0 left-0 right-0 z-40 bg-white shadow-md">
-        <div className="max-w-screen-2xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-          
-          {/* Logo - 🎯 2. เรียกใช้รูปจาก /public สดๆ ได้เลย ไม่ต้องย้อนโฟลเดอร์ import */}
-          <Link href="/welcome" className="flex items-center gap-2 shrink-0">
-            <Image 
-              src="/Inoac.png" 
-              width={64} 
-              height={64} 
-              quality={100} 
-              alt="Inoac Logo" 
-              className="w-auto h-8 " 
-              priority
+        <div className="mx-auto flex h-16 max-w-screen-2xl items-center justify-between px-4 sm:px-6 lg:px-8">
+
+          {/* Logo */}
+          <Link
+            href="/"
+            className="flex shrink-0 items-center gap-3"
+          >
+            <Image
+              src="/Inoac.png"
+              width={500}
+              height={500}
+              alt="Inoac Logo"
+              className="h-8 w-auto"
             />
-           
+
+            <div className="hidden leading-tight sm:block">
+              <p className="text-sm font-bold tracking-wide text-blue-950">
+                EMBOSS
+              </p>
+
+              <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-sky-500">
+                Production Report
+              </p>
+            </div>
           </Link>
 
-          {/* Desktop: เมนูแนวนอน */}
-          <nav className="hidden lg:flex items-center gap-1 flex-1 justify-center">
-            {NAV.map(({ href, label, icon: Icon }) => (
-              <Link
-                key={href}
-                href={href}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors
-                  ${isActive(href) ? "bg-blue-50 text-blue-500" : "text-blue-950 hover:bg-blue-50 hover:text-blue-900"}`}
-              >
-                <Icon className="w-4 h-4 shrink-0" />
-                {label}
-              </Link>
-            ))}
-            {mounted && session?.role === "admin" && (
-              <Link
-                href="/admin"
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors
-                  ${pathname === "/admin" ? "bg-blue-50 text-blue-500" : "text-blue-950 hover:bg-blue-50 hover:text-blue-900"}`}
-              >
-                <ShieldCheck className="w-4 h-4 shrink-0" />
-                Admin
-              </Link>
-            )}
-          </nav>
-
-          {/* Desktop: ผู้ใช้งาน + ออกจากระบบ */}
-          <div className="hidden lg:flex items-center gap-3 shrink-0">
-            {mounted && session && (
-              <span className="text-xs text-[#00B4D8] truncate max-w-40">
-                {session.firstName} {session.lastName}
-              </span>
-            )}
-            <button
-              onClick={handleLogout}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-rose-400 hover:bg-red-100/40 hover:text-rose-350  transition-colors"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              ออกจากระบบ
-            </button>
-          </div>
-
-          {/* Tablet/Mobile: ปุ่มเปิด Sidebar */}
-          <button
-            onClick={() => setDrawerOpen(true)}
-            className="lg:hidden hover:bg-blue-50 hover:text-blue-500 text-blue-950 p-2 rounded-lg transition-colors shrink-0"
+          {/* User */}
+          <div
+            className="relative flex items-center"
+            ref={dropdownRef}
           >
-            <Menu className="w-5 h-5" />
-          </button>
+            <button
+              onClick={() => setShowDropdown((prev) => !prev)}
+              className={`flex items-center gap-2.5 rounded-full px-3 py-2 transition-colors duration-200 sm:px-4 ${
+                showDropdown
+                  ? "bg-blue-100 text-blue-600"
+                  : "bg-blue-50 text-blue-950 hover:bg-blue-100"
+              }`}
+            >
+              <UserCircle className="h-5 w-5 text-sky-500 sm:h-6 sm:w-6" />
+
+              {mounted && (
+                <span className="hidden max-w-40 truncate text-sm font-medium sm:block">
+                  {displayName}
+                </span>
+              )}
+
+              <ChevronDown
+                className={`h-4 w-4 text-slate-400 transition-transform duration-200 ${
+                  showDropdown ? "rotate-180" : ""
+                }`}
+              />
+            </button>
+
+            {/* สามเหลี่ยม Dropdown */}
+            <div
+              className={`absolute right-5 top-12 h-3 w-3 rotate-45 bg-white shadow-sm transition-all duration-150 ${
+                showDropdown
+                  ? "opacity-100"
+                  : "pointer-events-none opacity-0"
+              }`}
+            />
+
+            {/* Dropdown */}
+            <div
+              className={`absolute right-0 top-14 z-50 min-w-60 origin-top-right overflow-hidden rounded-2xl bg-white text-slate-800 shadow-xl ring-1 ring-slate-200 transition-all duration-150 ${
+                showDropdown
+                  ? "translate-y-0 scale-100 opacity-100"
+                  : "pointer-events-none -translate-y-1 scale-95 opacity-0"
+              }`}
+            >
+              {mounted && session ? (
+                <>
+                  {/* User Info */}
+                  <div className="flex items-center gap-3 bg-blue-50 px-4 py-4">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-500 text-sm font-bold text-white">
+                      {(session.firstName?.[0] || "U").toUpperCase()}
+                    </div>
+
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-800">
+                        {displayName}
+                      </p>
+
+                      {session.department && (
+                        <p className="truncate text-xs text-slate-500">
+                          {session.department}
+                        </p>
+                      )}
+
+                      {session.role === "admin" && (
+                        <p className="mt-0.5 text-[11px] font-semibold text-blue-500">
+                          Administrator
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="h-px bg-slate-200" />
+
+                  {/* Logout */}
+                  <button
+                    onClick={handleLogout}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-red-500 transition-colors hover:bg-red-50 hover:text-red-600"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    <span>ออกจากระบบ</span>
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => router.push("/login")}
+                  className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-blue-600 hover:bg-blue-50"
+                >
+                  <UserCircle className="h-4 w-4" />
+                  เข้าสู่ระบบ
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </header>
 
-      {/* เว้นที่ว่างด้านบนให้เนื้อหาเนื่องจาก navbar เป็น fixed */}
+      {/* Navbar fixed เลยต้องเว้นด้านบน */}
       <div className="h-16" />
 
-      {/* Overlay + Sidebar drawer สำหรับ Tablet/Mobile */}
-      {drawerOpen && (
-        <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={() => setDrawerOpen(false)} />
-      )}
-      <aside
-        className={`fixed top-0 left-0 h-full w-64 bg-blue-950 text-white flex flex-col z-50 transition-transform duration-200 lg:hidden
-          ${drawerOpen ? "translate-x-0" : "-translate-x-full"}`}
-      >
-        <div className="flex items-center justify-between px-5 py-5 border-b border-blue-800">
-          <div>
-            <p className="text-xs text-blue-300 uppercase tracking-widest font-semibold">EMBOSS</p>
-            <p className="text-sm font-bold text-white leading-tight mt-0.5">Production Report</p>
-          </div>
-          <button onClick={() => setDrawerOpen(false)} className="text-blue-300 hover:text-white">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {mounted && session && (
-          <div className="px-5 py-3 border-b border-blue-800 bg-blue-900/40">
-            <p className="text-xs text-blue-300">ผู้ใช้งาน</p>
-            <p className="text-sm font-semibold text-white truncate">
-              {session.firstName} {session.lastName}
-            </p>
-            <p className="text-xs text-blue-400 truncate">{session.department}</p>
-          </div>
-        )}
-
-        <nav className="flex-1 px-3 py-4 space-y-1">
-          {NAV.map(({ href, label, icon: Icon }) => (
-            <Link
-              key={href}
-              href={href}
-              onClick={() => setDrawerOpen(false)}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
-                ${isActive(href) ? "bg-blue-700 text-white" : "text-blue-200 hover:bg-blue-800 hover:text-white"}`}
-            >
-              <Icon className="w-4 h-4 shrink-0" />
-              {label}
-            </Link>
-          ))}
-          {mounted && session?.role === "admin" && (
-            <Link
-              href="/admin"
-              onClick={() => setDrawerOpen(false)}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
-                ${pathname === "/admin" ? "bg-amber-600 text-white" : "text-amber-300 hover:bg-blue-800 hover:text-white"}`}
-            >
-              <ShieldCheck className="w-4 h-4 shrink-0" />
-              Admin Panel
-            </Link>
-          )}
-        </nav>
-
-        <div className="px-3 py-4 border-t border-blue-800">
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg text-sm font-medium text-red-400 hover:bg-red-50/40 hover:text-rose-500 transition-colors"
-          >
-            <LogOut className="w-4 h-4 shrink-0" />
-            ออกจากระบบ
-          </button>
-        </div>
-      </aside>
-
-      {/* 🎯 3. แก้ไข z-9999 -> z-[9999] สำหรับ Modal ออกจากระบบ */}
+      {/* Logout Modal */}
       {confirmOpen && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setConfirmOpen(false)} />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-80 p-6 flex flex-col items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
-              <LogOut className="w-6 h-6 text-red-500" />
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center px-4">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setConfirmOpen(false)}
+          />
+
+          <div className="relative flex w-80 flex-col items-center gap-4 rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
+              <LogOut className="h-6 w-6 text-red-500" />
             </div>
+
             <div className="text-center">
-              <p className="text-base font-bold text-slate-800">ออกจากระบบ</p>
-              <p className="text-sm text-slate-500 mt-1">ต้องการออกจากระบบหรือไม่?</p>
+              <p className="text-base font-bold text-slate-800">
+                ออกจากระบบ
+              </p>
+
+              <p className="mt-1 text-sm text-slate-500">
+                ต้องการออกจากระบบหรือไม่?
+              </p>
             </div>
-            <div className="flex gap-3 w-full">
+
+            <div className="flex w-full gap-3">
               <button
                 onClick={() => setConfirmOpen(false)}
-                className="flex-1 py-2 rounded-xl border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                className="flex-1 rounded-xl border border-slate-200 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50"
               >
                 ยกเลิก
               </button>
+
               <button
                 onClick={confirmLogout}
-                className="flex-1 py-2 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-bold transition-colors"
+                className="flex-1 rounded-xl bg-red-500 py-2 text-sm font-bold text-white transition-colors hover:bg-red-600"
               >
                 ตกลง
               </button>

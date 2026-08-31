@@ -1,6 +1,14 @@
-// Mock auth helpers using localStorage (swap with real API later)
+import axios from "axios";
+
+// Legacy users storage key (still used by admin local user utilities)
 const USERS_KEY = "emboss_users";
+// Session storage key used across the app
 const SESSION_KEY = "emboss_session";
+
+const AUTH_BASE_URL = (
+  process.env.NEXT_PUBLIC_AUTH_API_URL || process.env.NEXT_AUTH_API_URL || ""
+).replace(/\/$/, "");
+const AUTH_API = `${AUTH_BASE_URL}/api/auth`;
 
 const DEFAULT_ADMIN = {
   employeeId: "ADMIN",
@@ -29,34 +37,83 @@ function saveUsers(users) {
   localStorage.setItem(USERS_KEY, JSON.stringify(users));
 }
 
-export function registerUser({ employeeId, username, password, firstName, lastName, department }) {
-  const users = getUsers();
-  if (users.find((u) => u.username === username)) return { ok: false, error: "Username นี้ถูกใช้งานแล้ว" };
-  if (users.find((u) => u.employeeId === employeeId)) return { ok: false, error: "รหัสพนักงานนี้ถูกใช้งานแล้ว" };
-  users.push({ employeeId, username, password, firstName, lastName, department, role: "user" });
-  saveUsers(users);
-  return { ok: true };
+export async function registerUser({ employeeId, username, password, firstName, lastName, department }) {
+  try {
+    const parsedEmployeeId = Number.parseInt(employeeId, 10);
+
+    await axios.post(`${AUTH_API}/register`, {
+      employeeId: Number.isNaN(parsedEmployeeId) ? employeeId : parsedEmployeeId,
+      username,
+      password,
+      firstName,
+      lastName,
+      department,
+      section: department,
+    });
+
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error?.response?.data?.message || "เกิดข้อผิดพลาด",
+    };
+  }
 }
 
-export function loginUser(username, password) {
-  const users = getUsers();
-  const user = users.find((u) => u.username === username && u.password === password);
-  if (!user) return { ok: false, error: "Username หรือ Password ไม่ถูกต้อง" };
-  const session = { employeeId: user.employeeId, username: user.username, firstName: user.firstName, lastName: user.lastName, department: user.department, role: user.role };
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  return { ok: true, user: session };
+export async function loginUser(username, password) {
+  try {
+    const response = await axios.post(`${AUTH_API}/login`, { username, password });
+    const user = response?.data?.user;
+    const token = response?.data?.token;
+
+    if (!user) {
+      return { ok: false, error: "ข้อมูลผู้ใช้จากระบบไม่ถูกต้อง" };
+    }
+
+    const session = {
+      employeeId: user.employeeId,
+      username: user.username,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      department: user.department || user.section || "",
+      role: user.role || "user",
+    };
+
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    if (token) localStorage.setItem("token", token);
+
+    return { ok: true, user: session };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error?.response?.data?.message || "Username หรือ Password ไม่ถูกต้อง",
+    };
+  }
 }
 
 export function getSession() {
   if (typeof window === "undefined") return null;
+
   try {
+    const token = localStorage.getItem("token");
+
+    if (!token || isTokenExpired()) {
+      logout();
+      return null;
+    }
+
     const s = localStorage.getItem(SESSION_KEY);
+
     return s ? JSON.parse(s) : null;
-  } catch { return null; }
+  } catch {
+    logout();
+    return null;
+  }
 }
 
 export function logout() {
   localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem("token");
 }
 
 export function getAllUsers() {
@@ -92,3 +149,36 @@ export function resetPassword(username, newPassword) {
 }
 
 
+export function isTokenExpired() {
+  if (typeof window === "undefined") return true;
+
+  try {
+    const token = localStorage.getItem("token");
+
+    if (!token) return true;
+
+    const parts = token.split(".");
+
+    // JWT ปกติจะมี 3 ส่วน
+    if (parts.length !== 3) return true;
+
+    const payload = JSON.parse(
+      atob(
+        parts[1]
+          .replace(/-/g, "+")
+          .replace(/_/g, "/"),
+      ),
+    );
+
+    if (!payload.exp) {
+      return true;
+    }
+
+    const expireTime = payload.exp * 1000;
+
+    return Date.now() >= expireTime;
+  } catch (error) {
+    console.error("Invalid token:", error);
+    return true;
+  }
+}

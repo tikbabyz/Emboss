@@ -2,27 +2,23 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import Sidebar from "../components/AppNavbar";
 import {
+  Plus,
   Search,
   CalendarDays,
   ClipboardList,
+  Clock,
   CheckCircle2,
   Package,
   User,
   Eye,
-  Printer,
-  RotateCcw,
-  Tag,
+  Pencil,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
-import PrintLabelModal from "../components/PrintLabelModal";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL;
-
-// ─────────────────────────────────────────────
-// Date
-// ─────────────────────────────────────────────
 
 function getTodayDate() {
   const now = new Date();
@@ -34,20 +30,7 @@ function getTodayDate() {
   return `${year}-${month}-${day}`;
 }
 
-function formatInputDate(value) {
-  if (!value) return "";
-
-  const [year, month, day] = value.split("-");
-
-  return `${day}/${month}/${year}`;
-}
-
-// ─────────────────────────────────────────────
-// Production Row
-// เหมือน EmbossListPage
-// ─────────────────────────────────────────────
-
-function ProductionRow({ item, index, onView, onPrint, onPrintLabel }) {
+function ProductionRow({ item, index, onView, onEdit }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -58,60 +41,51 @@ function ProductionRow({ item, index, onView, onPrint, onPrintLabel }) {
         }`}
         onClick={() => setExpanded((prev) => !prev)}
       >
-        {/* ลำดับ */}
         <td className="px-4 py-4 text-center text-xs font-semibold text-slate-400">
           {index + 1}
         </td>
 
-        {/* Job / Part */}
         <td className="px-4 py-4">
-          <div className="font-bold text-slate-900">{item.job || "-"}</div>
+          <div className="font-bold text-slate-900">{item.job}</div>
 
           <div className="mt-0.5 text-xs font-semibold text-blue-700">
-            {item.partNo || "-"}
+            {item.partNo}
           </div>
         </td>
 
-        {/* รายละเอียด */}
         <td className="px-4 py-4">
           <div className="text-sm font-semibold text-slate-700">
-            {item.description || "-"}
+            {item.description}
           </div>
 
-          <div className="mt-0.5 text-xs text-slate-400">
-            สี: {item.color || "-"}
-          </div>
+          <div className="mt-0.5 text-xs text-slate-400">สี: {item.color}</div>
         </td>
 
-        {/* Part Lot */}
         <td className="px-4 py-4">
           <div className="text-sm font-semibold text-slate-700">
-            {item.partLotNumber || "-"}
+            {item.partLotNumber}
           </div>
         </td>
 
-        {/* Employee */}
         <td className="px-4 py-4 text-center">
           <div className="flex items-center justify-center gap-2">
             <User className="h-3.5 w-3.5 text-slate-400" />
 
             <span className="text-xs font-semibold text-slate-700">
-              {item.employeeName || "-"}
+              {item.employeeName}
             </span>
           </div>
         </td>
 
-        {/* OK */}
         <td className="px-4 py-4 text-right text-sm font-bold text-emerald-600">
           {Number(item.okQty || 0).toLocaleString()}
         </td>
 
-        {/* NG */}
         <td className="px-4 py-4 text-right text-sm font-bold text-rose-500">
           {Number(item.ngQty || 0).toLocaleString()}
         </td>
 
-        {/* Action */}
+        {/* จัดการ */}
         <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
             <button
@@ -125,26 +99,16 @@ function ProductionRow({ item, index, onView, onPrint, onPrintLabel }) {
 
             <button
               type="button"
-              onClick={() => onPrint(item)}
-              title="พิมพ์รายงาน"
-              className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-emerald-100 hover:text-emerald-600"
+              onClick={() => onEdit(item)}
+              title="แก้ไข"
+              className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-amber-100 hover:text-amber-600"
             >
-              <Printer className="h-4 w-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => onPrintLabel(item)}
-              title="พิมพ์ฉลากสินค้า (Roll Label)"
-              className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-sky-100 hover:text-sky-600"
-            >
-              <Tag className="h-4 w-4" />
+              <Pencil className="h-4 w-4" />
             </button>
           </div>
         </td>
       </tr>
 
-      {/* Expanded Material */}
       {expanded && (
         <tr>
           <td colSpan={8} className="bg-slate-50 px-6 py-4">
@@ -177,7 +141,7 @@ function ProductionRow({ item, index, onView, onPrint, onPrintLabel }) {
                     {item.materials?.length > 0 ? (
                       item.materials.map((mat, matIndex) => (
                         <tr
-                          key={`${mat.key}-${matIndex}`}
+                          key={`${mat.materialPartNo}-${mat.materialLotNumber}-${matIndex}`}
                           className="hover:bg-slate-50"
                         >
                           <td className="px-4 py-3 font-bold text-blue-700">
@@ -236,48 +200,29 @@ function ProductionRow({ item, index, onView, onPrint, onPrintLabel }) {
   );
 }
 
-// ─────────────────────────────────────────────
-// Main Tracking
-// ─────────────────────────────────────────────
-
-export default function TrackingPage() {
+export default function EmbossListPage() {
   const router = useRouter();
-
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-
   const [productions, setProductions] = useState([]);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("ALL");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  // ─────────────────────────────────────────
-  // Load API
-  // ─────────────────────────────────────────
-
-  const loadProductions = async (start, end) => {
-    if (!start || !end) return;
-
+  const loadProductions = async () => {
     try {
       setLoading(true);
 
+      const dayDate = getTodayDate();
+
       const response = await axios.get(
-        `${API_BASE_URL}/api/product/record/tracking/range`,
+        `${API_BASE_URL}/api/product/record/tracking`,
         {
           params: {
-            startDate: start,
-            endDate: end,
+            dayDate,
           },
         },
       );
 
       const rows = response.data || [];
-
-      // ─────────────────────────────────────
-      // Group แบบเดียวกับ EmbossList
-      // Job + Part Lot = 1 production
-      // ─────────────────────────────────────
-
       const map = new Map();
 
       rows.forEach((row) => {
@@ -286,12 +231,10 @@ export default function TrackingPage() {
         if (!map.has(key)) {
           map.set(key, {
             key,
-
             job: row.jobNumber,
             partNo: row.partNo,
             description: row.description,
             color: row.color,
-
             employeeName: row.employeeName,
 
             okQty: Number(row.okQty || 0),
@@ -304,10 +247,6 @@ export default function TrackingPage() {
         }
 
         const production = map.get(key);
-
-        // ─────────────────────────────────
-        // Material
-        // ─────────────────────────────────
 
         if (row.materialPartNo) {
           const materialKey = [
@@ -338,16 +277,17 @@ export default function TrackingPage() {
 
       setProductions(Array.from(map.values()));
     } catch (error) {
-      console.error("โหลด Tracking ไม่สำเร็จ:", error);
+      console.error("โหลด Daily Production ไม่สำเร็จ:", error);
+
       setProductions([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // ─────────────────────────────────────────
-  // Search
-  // ─────────────────────────────────────────
+  useEffect(() => {
+    loadProductions();
+  }, []);
 
   const filteredProductions = useMemo(() => {
     let result = [...productions];
@@ -361,7 +301,6 @@ export default function TrackingPage() {
           (item.partNo || "").toLowerCase().includes(keyword) ||
           (item.description || "").toLowerCase().includes(keyword) ||
           (item.partLotNumber || "").toLowerCase().includes(keyword) ||
-          (item.employeeName || "").toLowerCase().includes(keyword) ||
           item.materials?.some(
             (mat) =>
               (mat.materialPartNo || "").toLowerCase().includes(keyword) ||
@@ -371,7 +310,6 @@ export default function TrackingPage() {
       );
     }
 
-    // Material Status
     if (status !== "ALL") {
       result = result.filter((item) =>
         item.materials?.some((mat) => {
@@ -391,10 +329,6 @@ export default function TrackingPage() {
     return result;
   }, [productions, search, status]);
 
-  // ─────────────────────────────────────────
-  // Summary
-  // ─────────────────────────────────────────
-
   const totalJobs = productions.length;
 
   const totalOk = productions.reduce(
@@ -411,45 +345,16 @@ export default function TrackingPage() {
     item.materials?.some((mat) => Number(mat.materialNg || 0) > 0),
   ).length;
 
-  // ─────────────────────────────────────────
-  // Navigation
-  // ─────────────────────────────────────────
-
   const goToView = (item) => {
     router.push(
-      `/form?job=${encodeURIComponent(item.job)}&mode=view&from=tracking`,
+      `/form?job=${encodeURIComponent(item.job)}&mode=view&from=list`,
     );
   };
 
-  const goToPrint = (item) => {
+  const goToEdit = (item) => {
     router.push(
-      `/print-page?job=${encodeURIComponent(item.job)}&from=tracking`,
+      `/form?job=${encodeURIComponent(item.job)}&mode=edit&from=list`,
     );
-  };
-
-  const [labelModalOpen, setLabelModalOpen] = useState(false);
-  const [selectedJobForLabel, setSelectedJobForLabel] = useState("");
-
-  const openPrintLabel = (itemOrJob) => {
-    const jobStr = typeof itemOrJob === "object" ? itemOrJob?.job : itemOrJob;
-    setSelectedJobForLabel(jobStr || "");
-    setLabelModalOpen(true);
-  };
-
-  // ─────────────────────────────────────────
-  // Search API
-  // ─────────────────────────────────────────
-
-  const handleSearchDate = () => {
-    loadProductions(startDate, endDate);
-  };
-
-  const clearFilters = () => {
-    setStartDate("");
-    setEndDate("");
-    setSearch("");
-    setStatus("ALL");
-    setProductions([]);
   };
 
   return (
@@ -458,32 +363,31 @@ export default function TrackingPage() {
 
       {/* Header */}
       <div className="bg-gradient-to-r from-[#03045E] via-[#023E8A] to-[#00B4D8] px-4 py-5 text-white shadow-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5">
+        <div className="mx-auto flex max-w-7xl flex-col justify-between gap-4 px-5 sm:flex-row sm:items-center">
           <div>
-            <h1 className="text-2xl font-bold">ประวัติการผลิต</h1>
+            <h1 className="text-2xl font-bold">รายการผลิตประจำวัน</h1>
 
             <p className="mt-1 text-xs text-blue-100">
-              EMBOSS · Production Tracking
+              EMBOSS · Daily Production
             </p>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => openPrintLabel("")}
-              className="inline-flex items-center gap-2 rounded-xl bg-white px-3.5 py-2 text-xs font-bold text-blue-900 shadow-sm transition hover:bg-blue-50 active:scale-95 cursor-pointer"
-            >
-              <Tag className="h-3.5 w-3.5 text-blue-900" />
-              พิมพ์ฉลากสินค้า
-            </button>
-
-            <button
-              type="button"
               onClick={() => router.push("/")}
-              className="rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-xs font-bold text-white transition hover:bg-white hover:text-blue-900"
+              className="rounded-xl border border-white/30 bg-white/10 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white hover:text-blue-900"
             >
               ← กลับหน้า Home
             </button>
+
+            <Link
+              href="/form"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-blue-900 shadow-sm transition hover:bg-blue-50 active:scale-95"
+            >
+              <Plus className="h-4 w-4" />
+              สร้างการผลิต
+            </Link>
           </div>
         </div>
       </div>
@@ -491,7 +395,7 @@ export default function TrackingPage() {
       <main className="mx-auto max-w-7xl space-y-5 px-5 py-5">
         {/* Summary */}
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {/* Job */}
+          {/* Job ทั้งหมด */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <div>
@@ -510,7 +414,7 @@ export default function TrackingPage() {
             </div>
           </div>
 
-          {/* OK */}
+          {/* OK ทั้งหมด */}
           <div className="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <div>
@@ -527,7 +431,7 @@ export default function TrackingPage() {
             </div>
           </div>
 
-          {/* NG */}
+          {/* NG ทั้งหมด */}
           <div className="rounded-2xl border border-rose-100 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <div>
@@ -544,7 +448,7 @@ export default function TrackingPage() {
             </div>
           </div>
 
-          {/* Material NG */}
+          {/* Job ที่ Material NG */}
           <div className="rounded-2xl border border-amber-100 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <div>
@@ -558,7 +462,7 @@ export default function TrackingPage() {
               </div>
 
               <div className="rounded-xl bg-amber-50 p-3">
-                <Package className="h-5 w-5 text-amber-600" />
+                <Clock className="h-5 w-5 text-amber-600" />
               </div>
             </div>
           </div>
@@ -567,87 +471,11 @@ export default function TrackingPage() {
         {/* Filter */}
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            {/* Date */}
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Start */}
-              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                <CalendarDays className="h-4 w-4 text-blue-600" />
-
-                <span className="text-xs font-semibold text-slate-500">
-                  เริ่ม
-                </span>
-
-                <div className="relative">
-                  <input
-                    type="text"
-                    readOnly
-                    value={formatInputDate(startDate)}
-                    onClick={() =>
-                      document.getElementById("trackingStartDate")?.showPicker()
-                    }
-                    className="w-24 cursor-pointer bg-transparent text-xs font-semibold outline-none"
-                  />
-
-                  <input
-                    id="trackingStartDate"
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className="pointer-events-none absolute inset-0 opacity-0"
-                  />
-                </div>
-              </div>
-
-              <span className="text-slate-300">-</span>
-
-              {/* End */}
-              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                <CalendarDays className="h-4 w-4 text-blue-600" />
-
-                <span className="text-xs font-semibold text-slate-500">
-                  สิ้นสุด
-                </span>
-
-                <div className="relative">
-                  <input
-                    type="text"
-                    readOnly
-                    value={formatInputDate(endDate)}
-                    onClick={() =>
-                      document.getElementById("trackingEndDate")?.showPicker()
-                    }
-                    className="w-24 cursor-pointer bg-transparent text-xs font-semibold outline-none"
-                  />
-
-                  <input
-                    id="trackingEndDate"
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="pointer-events-none absolute inset-0 opacity-0"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleSearchDate}
-                className="rounded-xl bg-blue-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-blue-800"
-              >
-                ค้นหา
-              </button>
-
-              <button
-                type="button"
-                onClick={clearFilters}
-                title="Reset"
-                className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-blue-600"
-              >
-                <RotateCcw className="h-4 w-4" />
-              </button>
+            <div className="flex items-center gap-2 text-sm font-bold text-slate-700">
+              <CalendarDays className="h-4 w-4 text-blue-600" />
+              การผลิตวันนี้
             </div>
 
-            {/* Search + Status */}
             <div className="flex flex-col gap-2 sm:flex-row">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -667,9 +495,7 @@ export default function TrackingPage() {
                 className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 outline-none focus:border-blue-400"
               >
                 <option value="ALL">Material Status ทั้งหมด</option>
-
                 <option value="OK">OK</option>
-
                 <option value="NG">NG</option>
               </select>
             </div>
@@ -683,48 +509,31 @@ export default function TrackingPage() {
               <thead>
                 <tr className="bg-blue-900 text-[11px] uppercase tracking-wider text-white">
                   <th className="w-14 px-4 py-3 text-center">ลำดับ</th>
-
                   <th className="px-4 py-3">Job / Part No.</th>
-
                   <th className="px-4 py-3">รายละเอียดสินค้า</th>
-
                   <th className="px-4 py-3">Part Lot No.</th>
-
                   <th className="px-4 py-3 text-center">ผู้ผลิต</th>
-
                   <th className="px-4 py-3 text-right">OK</th>
-
                   <th className="px-4 py-3 text-right">NG</th>
-
                   <th className="w-24 px-4 py-3 text-center">จัดการ</th>
                 </tr>
               </thead>
 
               <tbody className="divide-y divide-slate-100">
-                {!loading &&
-                  filteredProductions.map((item, index) => (
-                    <ProductionRow
-                      key={item.key}
-                      item={item}
-                      index={index}
-                      onView={goToView}
-                      onPrint={goToPrint}
-                      onPrintLabel={openPrintLabel}
-                    />
-                  ))}
+                {filteredProductions.map((item, index) => (
+                  <ProductionRow
+                    key={item.key}
+                    item={item}
+                    index={index}
+                    onView={goToView}
+                    onEdit={goToEdit}
+                  />
+                ))}
               </tbody>
             </table>
           </div>
 
-          {loading && (
-            <div className="py-16 text-center">
-              <p className="text-sm font-semibold text-slate-400">
-                กำลังโหลดข้อมูล...
-              </p>
-            </div>
-          )}
-
-          {!loading && filteredProductions.length === 0 && (
+          {filteredProductions.length === 0 && (
             <div className="py-16 text-center">
               <Package className="mx-auto mb-3 h-12 w-12 text-slate-200" />
 
@@ -735,13 +544,6 @@ export default function TrackingPage() {
           )}
         </div>
       </main>
-
-      {/* Print Label Modal */}
-      <PrintLabelModal
-        isOpen={labelModalOpen}
-        onClose={() => setLabelModalOpen(false)}
-        initialJobNo={selectedJobForLabel}
-      />
     </div>
   );
 }

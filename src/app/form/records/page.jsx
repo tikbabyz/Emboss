@@ -11,6 +11,67 @@ import * as XLSX from "xlsx";
 const LS_KEY = "emboss_records";
 const TEMP_STD = 390;
 
+const pick = (...values) => {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+  return "";
+};
+
+const normalizeRecordData = (data = {}, rawMaterials = []) => {
+  const firstRaw = Array.isArray(rawMaterials) ? rawMaterials[0] || {} : {};
+
+  return {
+    job: pick(data.job, data.JobNumber),
+    finishPartNo: pick(data.finishPartNo, data.PartNo),
+    finishMaterial: pick(data.finishMaterial, data.Description),
+    finishColor: pick(data.finishColor, data.Color),
+    finishThick: pick(data.finishThick, data.thickness, data.Thickness),
+    finishWidth: pick(data.finishWidth, data.width, data.Width),
+    finishLength: pick(data.finishLength, data.length, data.Length),
+    finishProdQty: pick(data.finishProdQty, data.productQty, data.ProductQty, 0),
+    goodQty: pick(data.goodQty, data.okQty, data.OkQty, 0),
+    ngQty: pick(data.ngQty, data.NgQty, 0),
+    ngReason: pick(data.ngReason, data.problemNote, data.ProblemNote, "-"),
+    startTime: pick(data.startTime, data.StartTime),
+    endTime: pick(data.endTime, data.finishTime, data.FinishTime),
+    usedTime: pick(data.usedTime, data.totalTime, data.TotalTime),
+    prodCode: pick(data.prodCode, data.productCode, data.ProductCode),
+    finishLot: pick(data.finishLot, data.lotNumber, data.LotNumber),
+    rawPartNo: pick(data.rawPartNo, data.PartNoMaterial, firstRaw.materialItem),
+    rawMaterial: pick(
+      data.rawMaterial,
+      data.DescriptionMaterial,
+      firstRaw.materialDescription,
+    ),
+    rawColor: pick(data.rawColor, firstRaw.materialColor),
+    rawThick: pick(data.rawThick, firstRaw.materialThickness),
+    rawWidth: pick(data.rawWidth, firstRaw.materialWidth),
+    rawLength: pick(data.rawLength, firstRaw.materialLength),
+    rawUsedQty: pick(data.rawUsedQty, data.MaterialUse, firstRaw.matlQty),
+    rawLot: pick(data.rawLot, data.LotNumberMaterial, firstRaw.lotNumber),
+    rawRollNo: pick(data.rawRollNo, data.RollNumber, firstRaw.rollNumber),
+    speed: pick(data.speed, data.Speed),
+    temp1Top: pick(data.temp1Top, data.Temperature1),
+    temp1Bot: pick(data.temp1Bot),
+    temp2Top: pick(data.temp2Top, data.Temperature2),
+    temp2Bot: pick(data.temp2Bot),
+    temp3Top: pick(data.temp3Top, data.Temperature3),
+    temp3Bot: pick(data.temp3Bot),
+    temp4Top: pick(data.temp4Top, data.Temperature4),
+    temp4Bot: pick(data.temp4Bot),
+    temp5Top: pick(data.temp5Top, data.Temperature5),
+    temp5Bot: pick(data.temp5Bot),
+    temp6Top: pick(data.temp6Top, data.Temperature6),
+    temp6Bot: pick(data.temp6Bot),
+    waterfallTemp: pick(data.waterfallTemp, data.TemperatureCooler),
+    status: pick(data.status, data.AdhesiveCheck),
+    remark: pick(data.remark, data.Remarks),
+  };
+};
+
 // แสดงค่าอุณหภูมิพร้อมสีตามมาตรฐาน
 function TempCell({ val }) {
   if (val === undefined || val === "") return <span className="text-slate-400">–</span>;
@@ -25,7 +86,7 @@ function TempCell({ val }) {
 // แถวที่ขยายดูข้อมูลทั้งหมด
 function RecordRow({ rec, idx, onDelete }) {
   const [expanded, setExpanded] = useState(false);
-  const d = rec.data || {};
+  const d = normalizeRecordData(rec.data, rec.rawMaterials);
   const h = rec.header || {};
 
   const statusColor =
@@ -255,7 +316,7 @@ export default function RecordsPage() {
 
   const handleExportExcel = () => {
     const rows = records.map((rec, idx) => {
-      const d = rec.data || {};
+      const d = normalizeRecordData(rec.data, rec.rawMaterials);
       const h = rec.header || {};
       return {
         "#": idx + 1,
@@ -316,8 +377,14 @@ export default function RecordsPage() {
     setSubmitted(true);
   };
 
-  const totalGood = records.reduce((s, r) => s + Number(r.data?.goodQty || 0), 0);
-  const totalNG = records.reduce((s, r) => s + Number(r.data?.ngQty || 0), 0);
+  const totalGood = records.reduce(
+    (s, r) => s + Number(normalizeRecordData(r.data, r.rawMaterials).goodQty || 0),
+    0,
+  );
+  const totalNG = records.reduce(
+    (s, r) => s + Number(normalizeRecordData(r.data, r.rawMaterials).ngQty || 0),
+    0,
+  );
   const totalProd = totalGood + totalNG;
 
   return (
