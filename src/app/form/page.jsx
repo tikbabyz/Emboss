@@ -1,32 +1,64 @@
-﻿"use client";
-import React, { useState, useRef, useEffect } from "react";
+"use client";
+import React, {
+  Suspense,
+  useImperativeHandle,
+  useRef,
+  useState,
+  useEffect,
+} from "react";
 import Link from "next/link";
+import axios from "axios";
 import AppNavbar from "../components/AppNavbar";
 import {
-  Send,
-  Check,
-  CircleX,
   Save,
-  Package,
-  Layers,
-  Settings2,
-  CalendarDays,
-  User,
-  Cpu,
-  Clock3,
-  ClipboardCheck,
+  Pencil,
   ScanBarcode,
-  ListChecks,
-  BadgeCheck,
   Thermometer,
   CirclePile,
   BrickWall,
+  LoaderCircle,
 } from "lucide-react";
-import { findEmployee } from "../lib/employeeMaster";
+import { getSession } from "../lib/auth";
+import { ToastContainer, toast } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
+import { useSearchParams } from "next/navigation";
 
 const TEMP_STD = 390;
+const THICKNESS_SPEC = { min: 5, max: 6 };
+const WIDTH_SPEC_TOLERANCE = { minus: 0, plus: 50 };
+const LENGTH_SPEC_TOLERANCE = { minus: 0, plus: 5 };
 const TODAY = new Date().toISOString().split("T")[0];
 const LS_KEY = "emboss_records";
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+const PRODUCT_API = `${API_BASE_URL}/api/Product`;
+const PRODUCT_API_ROUTES = {
+  product: `${PRODUCT_API}/records/product`,
+  fg: `${PRODUCT_API}/records/fg`,
+  rawMaterial: `${PRODUCT_API}/records/rawmaterial`,
+  machine: `${PRODUCT_API}/records/machine`,
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+const PRODUCT_API_UPDATE_ROUTES = {
+  fg: (jobNumber, rollNumber) =>
+    `${PRODUCT_API_ROUTES.fg}/${encodeURIComponent(jobNumber)}/${rollNumber}`,
+
+  rawMaterial: (jobNumber, rollNumber, partNoMaterial) =>
+    `${PRODUCT_API_ROUTES.rawMaterial}/${encodeURIComponent(jobNumber)}/${rollNumber}/${encodeURIComponent(partNoMaterial)}`,
+
+  machine: (jobNumber, rollNumber) =>
+    `${PRODUCT_API_ROUTES.machine}/${encodeURIComponent(jobNumber)}/${rollNumber}`,
+};
+
+const toInt = (value) => {
+  const parsed = parseInt(String(value ?? "").replace(/[^0-9-]/g, ""), 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const toFloat = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 const getTempClass = (val) => {
   if (val === "" || val === null || val === undefined)
@@ -36,6 +68,39 @@ const getTempClass = (val) => {
   return "bg-emerald-50 border-emerald-400 text-emerald-900 font-bold";
 };
 
+const parseSpecNum = (val) => {
+  if (val === "" || val === null || val === undefined) return NaN;
+  const clean = String(val).replace(/,/g, "").trim();
+  const num = parseFloat(clean);
+  return Number.isFinite(num) ? num : NaN;
+};
+
+const isThicknessOutOfSpec = (value) => {
+  const num = parseSpecNum(value);
+  if (Number.isNaN(num)) return false;
+  return num < THICKNESS_SPEC.min || num > THICKNESS_SPEC.max;
+};
+
+const isWidthOutOfSpec = (value, stdWidth) => {
+  const num = parseSpecNum(value);
+  const std = parseSpecNum(stdWidth);
+  if (Number.isNaN(num) || Number.isNaN(std) || std <= 0) return false;
+  return (
+    num < std - WIDTH_SPEC_TOLERANCE.minus ||
+    num > std + WIDTH_SPEC_TOLERANCE.plus
+  );
+};
+
+const isLengthOutOfSpec = (value, stdLength) => {
+  const num = parseSpecNum(value);
+  const std = parseSpecNum(stdLength);
+  if (Number.isNaN(num) || Number.isNaN(std) || std <= 0) return false;
+  return (
+    num < std - LENGTH_SPEC_TOLERANCE.minus ||
+    num > std + LENGTH_SPEC_TOLERANCE.plus
+  );
+};
+
 const parseTime = (t) => {
   const parts = String(t || "")
     .replace(":", ".")
@@ -43,162 +108,205 @@ const parseTime = (t) => {
   return parseInt(parts[0] || 0) * 60 + parseInt(parts[1] || 0);
 };
 
-const formatDisplayDate = (dateString) => {
-  if (!dateString) return "";
-  const [year, month, day] = dateString.split("-");
-  return `${day}/${month}/${year}`;
+const splitTimeValue = (timeValue) => {
+  if (!timeValue) return { hh: "", mm: "" };
+  const [hh = "", mm = ""] = String(timeValue).split(":");
+  return {
+    hh: hh.replace(/\D/g, "").slice(0, 2),
+    mm: mm.replace(/\D/g, "").slice(0, 2),
+  };
+};
+
+const normalizeTimeForInput = (value) => {
+  if (!value) return "";
+
+  const text = String(value);
+  const match = text.match(/(\d{1,2}):(\d{2})/);
+
+  if (!match) return "";
+
+  return `${String(match[1]).padStart(2, "0")}:${match[2]}`;
+};
+
+const HHMMInput = React.forwardRef(
+  ({ value, onChange, disabled, containerClassName, inputClassName }, ref) => {
+    const hhRef = useRef(null);
+    const mmRef = useRef(null);
+    const { hh, mm } = splitTimeValue(value);
+
+    const defaultContainerClassName =
+      "flex items-center rounded-lg border border-slate-200 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-sky-100 focus-within:border-sky-400 transition-colors";
+    const defaultInputClassName =
+      "w-9 bg-transparent px-0 py-1.5 text-center text-xs font-mono text-slate-700 outline-none placeholder-slate-400 disabled:text-slate-500";
+
+    useImperativeHandle(ref, () => ({
+      focusHH: () => {
+        hhRef.current?.focus();
+        hhRef.current?.select();
+      },
+    }));
+
+    const emitTime = (nextHh, nextMm) => {
+      if (!nextHh && !nextMm) {
+        onChange?.("");
+        return;
+      }
+      onChange?.(`${nextHh}:${nextMm}`);
+    };
+
+    const handleHHChange = (e) => {
+      const nextHh = e.target.value.replace(/\D/g, "").slice(0, 2);
+      emitTime(nextHh, mm);
+
+      if (nextHh.length === 2) {
+        mmRef.current?.focus();
+        mmRef.current?.select();
+      }
+    };
+
+    const handleMMChange = (e) => {
+      const nextMm = e.target.value.replace(/\D/g, "").slice(0, 2);
+      emitTime(hh, nextMm);
+    };
+
+    const handleMMKeyDown = (e) => {
+      if (e.key === "Backspace" && mm.length === 0) {
+        hhRef.current?.focus();
+        hhRef.current?.select();
+      }
+    };
+
+    return (
+      <div
+        className={`${containerClassName || defaultContainerClassName} ${
+          disabled ? "bg-slate-100 border-slate-300" : ""
+        }`}
+      >
+        <input
+          ref={hhRef}
+          type="text"
+          inputMode="numeric"
+          maxLength={2}
+          placeholder="HH"
+          value={hh}
+          onChange={handleHHChange}
+          disabled={disabled}
+          className={inputClassName || defaultInputClassName}
+        />
+        <span className="select-none px-0.5 font-bold text-slate-500">:</span>
+        <input
+          ref={mmRef}
+          type="text"
+          inputMode="numeric"
+          maxLength={2}
+          placeholder="MM"
+          value={mm}
+          onChange={handleMMChange}
+          onKeyDown={handleMMKeyDown}
+          disabled={disabled}
+          className={inputClassName || defaultInputClassName}
+        />
+      </div>
+    );
+  },
+);
+
+HHMMInput.displayName = "HHMMInput";
+
+const toTimeOnlyString = (t) => {
+  const [rawH, rawM] = String(t || "").split(":");
+  const h = String(Math.max(0, Math.min(23, Number(rawH) || 0))).padStart(
+    2,
+    "0",
+  );
+  const m = String(Math.max(0, Math.min(59, Number(rawM) || 0))).padStart(
+    2,
+    "0",
+  );
+  return `${h}:${m}:00`;
+};
+
+const minutesToTimeOnly = (minutesValue) => {
+  const totalMinutes = Math.max(0, Number(minutesValue) || 0);
+  const hours = Math.floor(totalMinutes / 60) % 24;
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`;
 };
 
 const EMPTY_FORM = () => ({
-
-  job: "",
-  finishPartNo: "",
-  finishMaterial: "",
-  finishColor: "",
-  finishThick: "",
-  finishWidth: "",
-  finishLength: "",
-  finishProdQty: 0,
-  goodQty: 0,
-  ngQty: 0,
-  ngReason: "-",
-  startTime: "",
-  endTime: "",
-  usedTime: "",
-  prodCode: "",
-  finishLot: TODAY,
-  rawPartNo: "",
-  rawMaterial: "",
-  rawColor: "",
-  rawThick: "",
-  rawWidth: "",
-  rawLength: "",
-  rawUsedQty: "",
-  rawLot: TODAY,
-  rawRollNo: "",
-  speed: "",
-  temp1Top: 390,
-  temp1Bot: 390,
-  temp2Top: 390,
-  temp2Bot: 390,
-  temp3Top: 390,
-  temp3Bot: 390,
-  temp4Top: 390,
-  temp4Bot: 390,
-  temp5Top: 390,
-  temp5Bot: 390,
-  temp6Top: 390,
-  temp6Bot: 390,
-  waterfallTemp: "",
-  status: "OK",
-  remark: "",
+  JobNumber: "",
+  PartNo: "",
+  Description: "",
+  Color: "",
+  stdThickness: "",
+  stdWidth: "",
+  stdLength: "",
+  Thickness: "",
+  Width: "",
+  Length: "",
+  ProductQty: 0,
+  OkQty: 0,
+  NgQty: 0,
+  ProblemNote: "-",
+  StartTime: "",
+  FinishTime: "",
+  TotalTime: "",
+  ProductCode: "",
+  LotNumber: TODAY,
+  PartNoMaterial: "",
+  DescriptionMaterial: "",
+  MaterialUse: "",
+  LotNumberMaterial: TODAY,
+  RollNumber: "",
+  Speed: "",
+  Temperature1: String(TEMP_STD),
+  Temperature2: String(TEMP_STD),
+  Temperature3: String(TEMP_STD),
+  Temperature4: String(TEMP_STD),
+  Temperature5: String(TEMP_STD),
+  Temperature6: String(TEMP_STD),
+  TemperatureCooler: "",
+  AdhesiveCheck: "OK",
+  Remarks: "",
 });
 
-function FractionTempBox({ topVal, onTopChange, botVal, onBotChange }) {
-  return (
-    <div className="flex gap-2 justify-center">
-      {[
-        { val: topVal, onChange: onTopChange, label: "TOP" },
-        { val: botVal, onChange: onBotChange, label: "BOT" },
-      ].map((item, i) => (
-        <div
-          key={i}
-          className="flex flex-col items-center w-16 border border-slate-200 rounded-lg p-1 bg-white shadow-sm"
-        >
-          <div className="text-[9px] font-bold text-slate-400 mb-0.5">{item.label}</div>
-          <input
-            type="number"
-            value={item.val}
-            onChange={item.onChange}
-            placeholder="390"
-            className={`w-full text-center text-sm font-mono rounded-md p-1 border focus:outline-none transition-colors ${getTempClass(item.val)}`}
-          />
-          <div className="w-full border-b border-slate-200 my-1" />
-          <div className="text-[10px] font-bold text-slate-400 w-full text-center">
-            {TEMP_STD}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
+let inspectionRowSeed = 1;
 
-// ─── TimeInput Component ────────────────────────────────────────
-// กรอก HH แล้ว focus กระโดดไป MM อัตโนมัติเมื่อครบ 2 หลัก
-function TimeInput({ value = "", onChange }) {
-  const hhRef = React.useRef(null);
-  const mmRef = React.useRef(null);
-  const [hh, mm] = React.useMemo(() => {
-    if (value && value.includes(":")) {
-      const [h, m] = value.split(":");
-      return [h ?? "", m ?? ""];
-    }
-    return ["", ""];
-  }, [value]);
+// แต่ละแถว = ม้วนที่ผลิต 1 ม้วน แบ่งเป็น 2 ส่วน:
+// - FG Part: ข้อมูลชิ้นงานที่ผลิตได้ (เวลาเริ่ม/หนา/กว้าง/ยาว/งานเสีย/สาเหตุ/เวลาสิ้นสุด)
+// - SM Part: ข้อมูลวัตถุดิบที่ใช้ (จำนวนที่ใช้/Lot/Roll Number/ผลตรวจ OK-NG)
+//
+// status: "new" -> ยังไม่เคยบันทึก (กดปุ่ม "บันทึก" -> POST -> "locked")
+//         "locked" -> บันทึกแล้ว, ช่องกรอกถูกล็อก (กดปุ่ม "แก้ไข" -> "editing")
+//         "editing" -> ปลดล็อกให้แก้ไข (กดปุ่ม "อัพเดท" -> PUT -> "locked")
+const createInspectionRow = () => ({
+  id: inspectionRowSeed++,
+  status: "new",
+  // FG Part
+  startTime: "",
+  thickness: "",
+  width: "",
+  length: "",
+  defectQty: "",
+  reason: "",
+  finishTime: "",
+  prodName: "",
+  // SM Part
+  materials: [],
+  // Machine Part
+  machine: null,
+});
 
-  const emit = (newHH, newMM) => {
-    // ส่ง "HH:MM" เสมอ — ไม่ใช้ empty เพื่อหลีก controlled/uncontrolled warning
-    onChange(`${newHH}:${newMM}`);
-  };
-
-  const handleHHChange = (e) => {
-    const v = e.target.value.replace(/\D/g, "").slice(0, 2);
-    emit(v, mm);
-    // กระโดด focus ไป MM เมื่อครบ 2 หลัก
-    if (v.length === 2) {
-      mmRef.current?.focus();
-      mmRef.current?.select();
-    }
-  };
-
-  const handleMMChange = (e) => {
-    const v = e.target.value.replace(/\D/g, "").slice(0, 2);
-    emit(hh, v);
-  };
-
-  // Backspace จาก MM → กลับ HH โดยใช้ ref
-  const handleMMKeyDown = (e) => {
-    if (e.key === "Backspace" && mm === "") {
-      e.preventDefault();
-      hhRef.current?.focus();
-    }
-  };
-
-  return (
-    <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-blue-400 focus-within:border-blue-400 transition">
-      <input
-        ref={hhRef}
-        type="text"
-        inputMode="numeric"
-        maxLength={2}
-        placeholder="HH"
-        value={hh}
-        onChange={handleHHChange}
-        className="w-10 py-2 bg-transparent text-sm text-center font-mono focus:outline-none text-slate-700 placeholder-slate-400"
-      />
-      <span className="text-slate-500 font-bold select-none px-0.5">:</span>
-      <input
-        ref={mmRef}
-        type="text"
-        inputMode="numeric"
-        maxLength={2}
-        placeholder="MM"
-        value={mm}
-        onChange={handleMMChange}
-        onKeyDown={handleMMKeyDown}
-        className="w-10 py-2 bg-transparent text-sm text-center font-mono focus:outline-none text-slate-700 placeholder-slate-400"
-      />
-    </div>
-  );
-}
 // ─── HeaderSelect: Custom dropdown ใน header bar (smooth, no native select) ────
-function HeaderSelect({ value, onChange, options }) {
-  const [open, setOpen] = React.useState(false);
-  const ref = React.useRef(null);
+function HeaderSelect({ value, onChange, options, disabled = false }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
 
   // Close when clicking outside
-  React.useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
@@ -215,9 +323,16 @@ function HeaderSelect({ value, onChange, options }) {
         <span>{selected?.label ?? value}</span>
         <svg
           className={`w-3 h-3 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2.5}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M19 9l-7 7-7-7"
+          />
         </svg>
       </button>
 
@@ -232,11 +347,16 @@ function HeaderSelect({ value, onChange, options }) {
           <button
             key={opt.value}
             type="button"
-            onClick={() => { onChange(opt.value); setOpen(false); }}
+            onClick={() => {
+              onChange(opt.value);
+              setOpen(false);
+            }}
             className={`w-full text-left px-3 py-2 text-sm transition-colors
-              ${value === opt.value
-                ? "bg-blue-50 text-blue-700 font-semibold"
-                : "text-slate-700 hover:bg-slate-50"}`}
+              ${
+                value === opt.value
+                  ? "bg-blue-50 text-blue-700 font-semibold"
+                  : "text-slate-700 hover:bg-slate-50"
+              }`}
           >
             {opt.label}
           </button>
@@ -247,32 +367,49 @@ function HeaderSelect({ value, onChange, options }) {
 }
 
 // ─── FormSelect: Custom dropdown ใน form body (white card style) ───────────
-function FormSelect({ value, onChange, options, colorMap }) {
-  const [open, setOpen] = React.useState(false);
-  const ref = React.useRef(null);
+function FormSelect({ value, onChange, options, colorMap, disabled }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
 
-  React.useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
   const selected = options.find((o) => o.value === value);
-  const triggerCls = colorMap?.[value] ?? "bg-slate-50 border-slate-200 text-slate-800";
+  const triggerCls =
+    colorMap?.[value] ?? "bg-slate-50 border-slate-200 text-slate-800";
 
   return (
     <div ref={ref} className="relative w-full">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={`w-full flex items-center justify-between px-3 py-2 border rounded-lg text-sm  focus:outline-none transition-colors ${triggerCls}`}
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) {
+            setOpen((v) => !v);
+          }
+        }}
+        className={`w-full flex items-center justify-between px-3 py-2 border rounded-lg text-sm  focus:outline-none transition-colors ${triggerCls} ${
+          disabled ? "opacity-60 cursor-not-allowed" : ""
+        }`}
       >
         <span>{selected?.label ?? value}</span>
         <svg
           className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2.5}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M19 9l-7 7-7-7"
+          />
         </svg>
       </button>
 
@@ -285,12 +422,17 @@ function FormSelect({ value, onChange, options, colorMap }) {
           <button
             key={opt.value}
             type="button"
-            onClick={() => { onChange(opt.value); setOpen(false); }}
+            onClick={() => {
+              onChange(opt.value);
+              setOpen(false);
+            }}
             className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2
               ${value === opt.value ? "bg-blue-50 text-blue-700 font-semibold" : "text-slate-700 hover:bg-slate-50"}`}
           >
             {colorMap && (
-              <span className={`w-2 h-2 rounded-full shrink-0 ${opt.dot ?? "bg-slate-300"}`} />
+              <span
+                className={`w-2 h-2 rounded-full shrink-0 ${opt.dot ?? "bg-slate-300"}`}
+              />
             )}
             {opt.label}
           </button>
@@ -300,7 +442,67 @@ function FormSelect({ value, onChange, options, colorMap }) {
   );
 }
 
-export default function EmbossFormPage() {
+const normalizeBomRows = (rows = []) => {
+  return rows
+    .map((row, index) => {
+      const materialItem =
+        row?.MaterialItem ??
+        row?.materialItem ??
+        row?.PartNoMaterial ??
+        row?.partNoMaterial ??
+        "";
+      const materialDescription =
+        row?.MaterialDescription ??
+        row?.materialDescription ??
+        row?.DescriptionMaterial ??
+        row?.descriptionMaterial ??
+        "";
+      const materialColor = row?.MaterialColor ?? row?.materialColor ?? "";
+      const materialThickness = row?.Thickness ?? row?.thickness ?? "";
+      const materialWidth = row?.Width ?? row?.width ?? "";
+      const materialLength = row?.Length ?? row?.length ?? "";
+      const matlQty = Number(
+        row?.MatlQty ??
+          row?.matlQty ??
+          row?.MaterialUse ??
+          row?.materialUse ??
+          0,
+      );
+      const sequence = Number(row?.Sequence ?? row?.sequence ?? index + 1);
+      const operateNumber = Number(
+        row?.OperateNumber ??
+          row?.operateNumber ??
+          row?.OperNum ??
+          row?.operNum ??
+          0,
+      );
+
+      return {
+        materialItem: String(materialItem || ""),
+        materialDescription: String(materialDescription || ""),
+        materialColor: String(materialColor || ""),
+        materialThickness: String(materialThickness ?? ""),
+        materialWidth: String(materialWidth ?? ""),
+        materialLength: String(materialLength ?? ""),
+        matlQty: Number.isNaN(matlQty) ? 0 : matlQty,
+        sequence: Number.isNaN(sequence) ? index + 1 : sequence,
+        operateNumber: Number.isNaN(operateNumber) ? 0 : operateNumber,
+        lotNumber: row?.LotNumberMaterial ?? row?.lotNumberMaterial ?? TODAY,
+        rollNumber: row?.RollNumber ?? row?.rollNumber ?? "",
+        // ผลตรวจวัตถุดิบต่อรายการ (OK / NG) — แก้ไขได้โดยพนักงาน
+        status:
+          row?.status ??
+          (typeof row?.Judgement === "boolean"
+            ? row.Judgement
+              ? "OK"
+              : "NG"
+            : "OK"),
+      };
+    })
+    .filter((row) => row.materialItem || row.materialDescription);
+};
+
+function EmbossFormContent() {
   const [form, setForm] = useState(EMPTY_FORM());
   const [header, setHeader] = useState({
     reportDate: TODAY,
@@ -308,435 +510,1338 @@ export default function EmbossFormPage() {
     machineNo: "EMBOSS-01",
     employeeId: "",
     employeeName: "",
-    foremanName: "",
   });
-  const [empError, setEmpError] = useState("");
-  const [errors, setErrors] = useState({});
-  const [saveSuccess, setSaveSuccess] = useState(false);
   const [recordCount, setRecordCount] = useState(0);
-  const [mounted, setMounted] = useState(false);
+  const [jobLoading, setJobLoading] = useState(false);
+  const [bomLoading, setBomLoading] = useState(false);
+  const [rawMaterials, setRawMaterials] = useState([]);
+  const [inspectionRows, setInspectionRows] = useState([createInspectionRow()]);
+  const jobRef = useRef(null);
+  const latestJobRequestedRef = useRef("");
+  const latestBomRequestedRef = useRef("");
 
-  // eslint-disable-next-line react-compiler/react-compiler
+  const searchParams = useSearchParams();
+
+  const job = searchParams.get("job");
+  const mode = searchParams.get("mode");
+  const from = searchParams.get("from");
+
+  const isViewMode = mode === "view";
+  const isEditMode = mode === "edit";
+
+  const backHref = from === "tracking" ? "/tracking" : "/emboss-list";
+
   useEffect(() => {
-    setMounted(true);
-    try {
-      const stored = localStorage.getItem(LS_KEY);
-      if (stored) {
+    queueMicrotask(() => {
+      const session = getSession();
+      setHeader((prev) => ({
+        ...prev,
+        employeeId: String(session?.employeeId || ""),
+        employeeName:
+          `${session?.firstName || ""} ${session?.lastName || ""}`.trim(),
+      }));
+
+      try {
+        const stored = localStorage.getItem(LS_KEY);
+        if (!stored) {
+          setRecordCount(0);
+          return;
+        }
         const parsed = JSON.parse(stored);
         setRecordCount(Array.isArray(parsed) ? parsed.length : 0);
+      } catch {
+        setRecordCount(0);
       }
-    } catch {
-      setRecordCount(0);
-    }
+    });
   }, []);
-  const jobRef = useRef(null);
 
-  const handleHeaderChange = (field, value) => {
-    setHeader((prev) => ({ ...prev, [field]: value }));
-    if (field === "employeeId") {
-      setEmpError("");
-      setHeader((prev) => ({ ...prev, employeeId: value, employeeName: "" }));
+  const loadProductByJob = async (jobNumber) => {
+    if (!jobNumber) return;
+
+    try {
+      const response = await axios.get(
+        `${PRODUCT_API}/get/job/${encodeURIComponent(jobNumber)}`,
+      );
+
+      const data = response.data;
+
+      const head = data?.HEAD ?? data?.Head ?? data?.head ?? null;
+
+      const fgRows = data?.FG ?? data?.Fg ?? data?.fg ?? [];
+
+      if (!head) {
+        toast.error(`ไม่พบข้อมูล Job ${jobNumber}`);
+        return;
+      }
+
+      const partNo = head.PartNo ?? head.partNo ?? "";
+
+      // HEAD
+      setForm((prev) => ({
+        ...prev,
+        JobNumber: head.JobNumber ?? head.jobNumber ?? jobNumber,
+
+        PartNo: partNo,
+
+        Description: head.Description ?? head.description ?? "",
+
+        Color: head.Color ?? head.color ?? "",
+
+        stdThickness: String(
+          head.Thickness ?? head.thickness ?? prev.stdThickness ?? "",
+        ),
+
+        stdWidth: String(head.Width ?? head.width ?? prev.stdWidth ?? ""),
+
+        stdLength: String(head.Length ?? head.length ?? prev.stdLength ?? ""),
+      }));
+
+      const allMachines =
+        data?.MACHINE ?? data?.Machine ?? data?.machine ?? [];
+
+      // Machine Setting (if available)
+      const firstMachine =
+        fgRows[0]?.Machines?.[0] ??
+        fgRows[0]?.machines?.[0] ??
+        (Array.isArray(allMachines) ? allMachines[0] : allMachines) ??
+        null;
+
+      if (firstMachine) {
+        setForm((prev) => ({
+          ...prev,
+          Speed: String(
+            firstMachine.Speed ?? firstMachine.speed ?? prev.Speed ?? "",
+          ),
+          Temperature1: String(
+            firstMachine.Temperature1 ??
+              firstMachine.temperature1 ??
+              prev.Temperature1 ??
+              TEMP_STD,
+          ),
+          Temperature2: String(
+            firstMachine.Temperature2 ??
+              firstMachine.temperature2 ??
+              prev.Temperature2 ??
+              TEMP_STD,
+          ),
+          Temperature3: String(
+            firstMachine.Temperature3 ??
+              firstMachine.temperature3 ??
+              prev.Temperature3 ??
+              TEMP_STD,
+          ),
+          Temperature4: String(
+            firstMachine.Temperature4 ??
+              firstMachine.temperature4 ??
+              prev.Temperature4 ??
+              TEMP_STD,
+          ),
+          Temperature5: String(
+            firstMachine.Temperature5 ??
+              firstMachine.temperature5 ??
+              prev.Temperature5 ??
+              TEMP_STD,
+          ),
+          Temperature6: String(
+            firstMachine.Temperature6 ??
+              firstMachine.temperature6 ??
+              prev.Temperature6 ??
+              TEMP_STD,
+          ),
+          TemperatureCooler: String(
+            firstMachine.TemperatureCooler ??
+              firstMachine.temperatureCooler ??
+              prev.TemperatureCooler ??
+              "",
+          ),
+          AdhesiveCheck:
+            firstMachine.AdhesiveCheck ??
+            firstMachine.adhesiveCheck ??
+            prev.AdhesiveCheck ??
+            "OK",
+          Remarks:
+            firstMachine.Remarks ?? firstMachine.remarks ?? prev.Remarks ?? "",
+        }));
+      }
+
+      // BOM
+      if (partNo) {
+        try {
+          const bomResponse = await axios.get(
+            `${API_BASE_URL}/api/jobs/bom/${encodeURIComponent(partNo)}`,
+          );
+
+          const bomPayload = Array.isArray(bomResponse.data)
+            ? bomResponse.data
+            : bomResponse.data
+              ? [bomResponse.data]
+              : [];
+
+          const bomMaterials = normalizeBomRows(bomPayload);
+
+          setRawMaterials(bomMaterials);
+          syncFirstRawMaterialToForm(bomMaterials);
+        } catch (error) {
+          console.error("Load BOM error:", error);
+          setRawMaterials([]);
+        }
+      }
+
+      // FG + Materials + Machines ที่ Backend จัดมาให้แล้ว
+      const rows = fgRows.map((fg, index) => {
+        const rollNo = fg.RollNo ?? fg.rollNo ?? index + 1;
+        const rollNoNum = Number(rollNo);
+
+        const materials = fg.Materials ?? fg.materials ?? [];
+
+        const rollMachine =
+          fg.Machines?.[0] ??
+          fg.machines?.[0] ??
+          (Array.isArray(allMachines)
+            ? allMachines.find(
+                (m) =>
+                  Number(
+                    m.FgRoll ??
+                      m.fgRoll ??
+                      m.RollNo ??
+                      m.rollNo ??
+                      m.RollNumber ??
+                      m.rollNumber,
+                  ) === rollNoNum,
+              )
+            : null) ??
+          null;
+
+        return {
+          id: inspectionRowSeed++,
+          rollNumber: rollNoNum,
+          status: "locked",
+
+          startTime: normalizeTimeForInput(fg.StartTime ?? fg.startTime),
+
+          thickness: String(fg.Thickness ?? fg.thickness ?? ""),
+
+          width: String(fg.Width ?? fg.width ?? ""),
+
+          length: String(fg.Length ?? fg.length ?? ""),
+
+          defectQty: String(fg.ProductNg ?? fg.productNg ?? ""),
+
+          reason: fg.ProblemNote ?? fg.problemNote ?? "",
+
+          finishTime: normalizeTimeForInput(fg.FinishTime ?? fg.finishTime),
+
+          prodName: fg.ProdName ?? fg.prodName ?? "",
+
+          materials: materials.map((detail) => ({
+            materialItem: detail.MaterialPartNo ?? detail.materialPartNo ?? "",
+
+            description:
+              detail.MaterialDescription ?? detail.materialDescription ?? "",
+
+            qtyUsed: String(detail.MaterialUse ?? detail.materialUse ?? ""),
+
+            lot: detail.MaterialLotNumber ?? detail.materialLotNumber ?? "",
+
+            rollNumber: String(detail.RollNumber ?? detail.rollNumber ?? ""),
+
+            judgment:
+              (detail.Judgement ?? detail.judgement) === true ||
+              (detail.Judgement ?? detail.judgement) === 1
+                ? "OK"
+                : "NG",
+
+            detailId: detail.DetailId ?? detail.detailId ?? null,
+          })),
+
+          machine: rollMachine
+            ? {
+                speed: String(rollMachine.Speed ?? rollMachine.speed ?? ""),
+                temperature1: String(
+                  rollMachine.Temperature1 ??
+                    rollMachine.temperature1 ??
+                    TEMP_STD,
+                ),
+                temperature2: String(
+                  rollMachine.Temperature2 ??
+                    rollMachine.temperature2 ??
+                    TEMP_STD,
+                ),
+                temperature3: String(
+                  rollMachine.Temperature3 ??
+                    rollMachine.temperature3 ??
+                    TEMP_STD,
+                ),
+                temperature4: String(
+                  rollMachine.Temperature4 ??
+                    rollMachine.temperature4 ??
+                    TEMP_STD,
+                ),
+                temperature5: String(
+                  rollMachine.Temperature5 ??
+                    rollMachine.temperature5 ??
+                    TEMP_STD,
+                ),
+                temperature6: String(
+                  rollMachine.Temperature6 ??
+                    rollMachine.temperature6 ??
+                    TEMP_STD,
+                ),
+                temperatureCooler: String(
+                  rollMachine.TemperatureCooler ??
+                    rollMachine.temperatureCooler ??
+                    "",
+                ),
+                adhesiveCheck:
+                  rollMachine.AdhesiveCheck ??
+                  rollMachine.adhesiveCheck ??
+                  "OK",
+                remarks: rollMachine.Remarks ?? rollMachine.remarks ?? "",
+              }
+            : null,
+        };
+      });
+
+      setInspectionRows(rows.length > 0 ? rows : [createInspectionRow()]);
+    } catch (error) {
+      console.error("loadProductByJob error:", error);
+
+      const status = error?.response?.status;
+
+      if (status === 404) {
+        toast.error(`ไม่พบข้อมูล Job ${jobNumber}`);
+      } else {
+        toast.error("ไม่สามารถโหลดข้อมูลการผลิตได้");
+      }
     }
   };
 
-  const handleEmployeeIdBlur = () => {
-    // TODO: เปลี่ยนเป็น API call: fetch(`/api/employees/${header.employeeId}`)
-    if (!header.employeeId) return;
-    const emp = findEmployee(header.employeeId);
-    if (emp) {
-      setHeader((prev) => ({ ...prev, employeeName: emp.name }));
-      setEmpError("");
-    } else {
-      setEmpError("ไม่พบรหัสพนักงาน");
+  useEffect(() => {
+    if (!job) return;
+
+    if (isViewMode || isEditMode) {
+      loadProductByJob(job);
     }
+  }, [job, mode]);
+
+  // ปลดล็อกแถวเพื่อแก้ไขได้ทีละแถว / แถวอื่นที่กำลังแก้ไขอยู่จะกลับไปเป็น locked
+  const toggleEditRow = (rowId) => {
+    const targetRow = inspectionRows.find((r) => r.id === rowId);
+    if (!targetRow) return;
+
+    const isOpening = targetRow.status !== "editing";
+
+    if (isOpening && targetRow.machine) {
+      setForm((prev) => ({
+        ...prev,
+        Speed: targetRow.machine.speed,
+        Temperature1: targetRow.machine.temperature1,
+        Temperature2: targetRow.machine.temperature2,
+        Temperature3: targetRow.machine.temperature3,
+        Temperature4: targetRow.machine.temperature4,
+        Temperature5: targetRow.machine.temperature5,
+        Temperature6: targetRow.machine.temperature6,
+        TemperatureCooler: targetRow.machine.temperatureCooler,
+        AdhesiveCheck: targetRow.machine.adhesiveCheck,
+        Remarks: targetRow.machine.remarks,
+      }));
+    }
+
+    setInspectionRows((prev) =>
+      prev.map((r) => {
+        if (r.id === rowId) {
+          return { ...r, status: isOpening ? "editing" : "locked" };
+        }
+        // หากมีแถวอื่นที่อยู่ในสถานะ editing อยู่ ให้กลับไปเป็น locked อัตโนมัติ
+        if (r.status === "editing") {
+          return { ...r, status: "locked" };
+        }
+        return r;
+      }),
+    );
+  };
+
+  const handleSaveInspectionRow = async (row, rowIndex) => {
+    // แถวที่ยังล็อกอยู่ไม่ควรบันทึกซ้ำ (ปุ่มจะโชว์ "แก้ไข" อยู่แล้ว แต่กันไว้อีกชั้น)
+    if (row.status === "locked") return;
+
+    const isUpdate = row.status === "editing";
+
+    if (!form.JobNumber?.trim()) {
+      toast.warning("กรุณากรอกหรือค้นหา Job ก่อนบันทึก");
+      return;
+    }
+
+    if (!form.PartNo?.trim()) {
+      toast.warning("กรุณาระบุ Part No.");
+      return;
+    }
+
+    if (!row.startTime) {
+      toast.warning(`กรุณากรอกเวลาเริ่ม ม้วนที่ ${rowIndex + 1}`);
+      return;
+    }
+
+    if (!row.finishTime) {
+      toast.warning(`กรุณากรอกเวลาสิ้นสุด ม้วนที่ ${rowIndex + 1}`);
+      return;
+    }
+
+    if (!row.thickness) {
+      toast.warning(`กรุณากรอกความหนา ม้วนที่ ${rowIndex + 1}`);
+      return;
+    }
+
+    if (!row.width) {
+      toast.warning(`กรุณากรอกความกว้าง ม้วนที่ ${rowIndex + 1}`);
+      return;
+    }
+
+    if (!row.length) {
+      toast.warning(`กรุณากรอกความยาว ม้วนที่ ${rowIndex + 1}`);
+      return;
+    }
+
+    if (!row.prodName?.trim() && !header.employeeName) {
+      toast.warning(`กรุณากรอกชื่อพนักงานผลิต ม้วนที่ ${rowIndex + 1}`);
+      return;
+    }
+
+    const incompleteMaterial = row.materials.find(
+      (material) =>
+        !material.qtyUsed ||
+        !material.lot ||
+        !material.rollNumber ||
+        !material.judgment,
+    );
+
+    if (incompleteMaterial) {
+      toast.warning(`กรุณากรอกข้อมูลวัตถุดิบของม้วนที่ ${rowIndex + 1} ให้ครบ`);
+      return;
+    }
+
+    if (toInt(row.defectQty) > 0 && !row.reason?.trim()) {
+      toast.warning(`กรุณาระบุสาเหตุงานเสีย ม้วนที่ ${rowIndex + 1}`);
+      return;
+    }
+
+    if (
+      row.startTime &&
+      row.finishTime &&
+      parseTime(row.finishTime) < parseTime(row.startTime)
+    ) {
+      toast.warning(
+        `เวลาสิ้นสุดของม้วนที่ ${rowIndex + 1} ต้องไม่น้อยกว่าเวลาเริ่ม`,
+      );
+      return;
+    }
+
+    if (
+      form.Speed === "" ||
+      form.Speed === null ||
+      form.Speed === undefined ||
+      isNaN(Number(form.Speed))
+    ) {
+      toast.warning("กรุณากรอก Speed (m/min)");
+      return;
+    }
+
+    if (
+      form.TemperatureCooler === "" ||
+      form.TemperatureCooler === null ||
+      form.TemperatureCooler === undefined ||
+      isNaN(Number(form.TemperatureCooler))
+    ) {
+      toast.warning("กรุณากรอกอุณหภูมิน้ำหล่อเย็น (°C)");
+      return;
+    }
+
+    if (!form.AdhesiveCheck?.trim()) {
+      toast.warning("กรุณาเลือกการติดกันของโฟมกับฟิล์ม");
+      return;
+    }
+
+    const heaterTemps = [
+      { n: 1, pos: "บนซ้าย", val: form.Temperature1 },
+      { n: 2, pos: "บนกลาง", val: form.Temperature2 },
+      { n: 3, pos: "บนขวา", val: form.Temperature3 },
+      { n: 4, pos: "ล่างซ้าย", val: form.Temperature4 },
+      { n: 5, pos: "ล่างขวา", val: form.Temperature5 },
+      { n: 6, pos: "กลางล่าง", val: form.Temperature6 },
+    ];
+    const invalidTemp = heaterTemps.find(
+      (t) =>
+        t.val === "" ||
+        t.val === null ||
+        t.val === undefined ||
+        isNaN(Number(t.val)),
+    );
+    if (invalidTemp) {
+      toast.warning(
+        `กรุณากรอกอุณหภูมิ Heater ${invalidTemp.n} (${invalidTemp.pos})`,
+      );
+      return;
+    }
+
+    const rollNumber = row.rollNumber ?? rowIndex + 1;
+
+    try {
+      if (rowIndex === 0 && !isUpdate) {
+        const productPayload = {
+          JobNumber: form.JobNumber,
+          PartNo: form.PartNo,
+          Description: form.Description,
+          Color: form.Color,
+          EmployeeName: row.prodName || header.employeeName,
+          RecordDate: header.reportDate,
+        };
+
+        await axios.post(PRODUCT_API_ROUTES.product, productPayload);
+      }
+
+      const fgPayload = {
+        JobNumber: form.JobNumber,
+        PartNo: form.PartNo,
+        Description: form.Description,
+        RollNumber: rollNumber,
+        Thickness: toFloat(row.thickness),
+        Width: toFloat(row.width),
+        Length: toFloat(row.length),
+        ProductNg: toInt(row.defectQty),
+        ProblemNote: row.reason || "-",
+        StartTime: toTimeOnlyString(row.startTime),
+        FinishTime: toTimeOnlyString(row.finishTime),
+        TotalTime: minutesToTimeOnly(
+          row.startTime && row.finishTime
+            ? Math.max(0, parseTime(row.finishTime) - parseTime(row.startTime))
+            : 0,
+        ),
+        LotNumber: form.LotNumber,
+        ProdName: row.prodName || header.employeeName,
+        Shift: header.shift,
+      };
+
+      if (isUpdate) {
+        // DRAFT: confirm this endpoint/shape with backend
+        await axios.put(
+          PRODUCT_API_UPDATE_ROUTES.fg(form.JobNumber, rollNumber),
+          fgPayload,
+        );
+      } else {
+        await axios.post(PRODUCT_API_ROUTES.fg, fgPayload);
+      }
+
+      const rawMaterialPayloads = row.materials.map((material) => ({
+        JobNumber: form.JobNumber,
+        PartNoMaterial: material.materialItem,
+        DescriptionMaterial: material.description || "",
+        FgRoll: rollNumber,
+        MaterialUse: toInt(material.qtyUsed),
+        LotNumberMaterial: material.lot || TODAY,
+        RollNumber: toInt(material.rollNumber),
+        Judgement: material.judgment === "OK",
+      }));
+
+      if (isUpdate) {
+        // DRAFT: confirm this endpoint/shape with backend
+        await Promise.all(
+          rawMaterialPayloads.map((payload) =>
+            axios.put(
+              PRODUCT_API_UPDATE_ROUTES.rawMaterial(
+                form.JobNumber,
+                rollNumber,
+                payload.PartNoMaterial,
+              ),
+              payload,
+            ),
+          ),
+        );
+      } else {
+        await Promise.all(
+          rawMaterialPayloads.map((payload) =>
+            axios.post(PRODUCT_API_ROUTES.rawMaterial, payload),
+          ),
+        );
+      }
+
+      const machinePayload = {
+        JobNumber: form.JobNumber,
+        RollNumber: rollNumber,
+        Speed: toFloat(form.Speed),
+        Temperature1: toFloat(form.Temperature1),
+        Temperature2: toFloat(form.Temperature2),
+        Temperature3: toFloat(form.Temperature3),
+        Temperature4: toFloat(form.Temperature4),
+        Temperature5: toFloat(form.Temperature5),
+        Temperature6: toFloat(form.Temperature6),
+        TemperatureCooler: toFloat(form.TemperatureCooler),
+        AdhesiveCheck: form.AdhesiveCheck,
+        Remarks: form.Remarks || "",
+      };
+
+      if (isUpdate) {
+        await axios.put(
+          PRODUCT_API_UPDATE_ROUTES.machine(form.JobNumber, rollNumber),
+          machinePayload,
+        );
+      } else {
+        await axios.post(PRODUCT_API_ROUTES.machine, machinePayload);
+      }
+
+      // บันทึก/อัพเดทสำเร็จ -> ล็อกแถวและอัพเดทค่า machine ประจำม้วน
+      const currentMachineState = {
+        speed: String(form.Speed),
+        temperature1: String(form.Temperature1),
+        temperature2: String(form.Temperature2),
+        temperature3: String(form.Temperature3),
+        temperature4: String(form.Temperature4),
+        temperature5: String(form.Temperature5),
+        temperature6: String(form.Temperature6),
+        temperatureCooler: String(form.TemperatureCooler),
+        adhesiveCheck: form.AdhesiveCheck,
+        remarks: form.Remarks || "",
+      };
+
+      setInspectionRows((prev) =>
+        prev.map((r) =>
+          r.id === row.id
+            ? { ...r, status: "locked", machine: currentMachineState }
+            : r,
+        ),
+      );
+
+      toast.success(
+        isUpdate
+          ? `อัพเดทม้วนที่ ${rowIndex + 1} เรียบร้อยแล้ว`
+          : `บันทึกม้วนที่ ${rowIndex + 1} เรียบร้อยแล้ว`,
+      );
+    } catch (error) {
+      const apiMessage =
+        error?.response?.data?.message ||
+        (typeof error?.response?.data === "string"
+          ? error.response.data
+          : "") ||
+        error?.message ||
+        "บันทึกข้อมูลไม่สำเร็จ";
+
+      toast.error(`${isUpdate ? "อัพเดท" : "บันทึก"}ไม่สำเร็จ: ${apiMessage}`);
+    }
+  };
+
+  const syncInspectionRowsSmDefaults = (materials) => {
+    setInspectionRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        materials: materials.map((material) => ({
+          materialItem: material.materialItem,
+          description: material.materialDescription,
+          qtyUsed: "",
+          lot: TODAY,
+          rollNumber: "",
+          judgment: "",
+        })),
+      })),
+    );
+  };
+
+  const syncFirstRawMaterialToForm = (rows) => {
+    const first = rows?.[0];
+    setForm((prev) => ({
+      ...prev,
+      PartNoMaterial: first?.materialItem || "",
+      DescriptionMaterial: first?.materialDescription || "",
+      MaterialUse: first ? String(first?.matlQty ?? "") : "",
+      RollNumber: first ? String(first?.rollNumber ?? "") : "",
+      LotNumberMaterial: first?.lotNumber || TODAY,
+      stdThickness:
+        prev.stdThickness ||
+        (first?.materialThickness ? String(first.materialThickness) : ""),
+      stdWidth:
+        prev.stdWidth || (first?.materialWidth ? String(first.materialWidth) : ""),
+      stdLength:
+        prev.stdLength ||
+        (first?.materialLength ? String(first.materialLength) : ""),
+    }));
+  };
+
+  const fetchBomDetails = async (partNoValue) => {
+    const partNo = String(partNoValue || "").trim();
+
+    if (!partNo) {
+      latestBomRequestedRef.current = "";
+      setRawMaterials([]);
+      syncInspectionRowsSmDefaults([]);
+      setBomLoading(false);
+      syncFirstRawMaterialToForm([]);
+      return;
+    }
+
+    latestBomRequestedRef.current = partNo;
+    setBomLoading(true);
+
+    try {
+      const response = await axios.get(
+        `${API_BASE_URL}/api/jobs/bom/${encodeURIComponent(partNo)}`,
+      );
+
+      if (latestBomRequestedRef.current !== partNo) return;
+
+      const payload = Array.isArray(response.data)
+        ? response.data
+        : response.data
+          ? [response.data]
+          : [];
+
+      const materials = normalizeBomRows(payload);
+
+      setRawMaterials(materials);
+      syncInspectionRowsSmDefaults(materials);
+      syncFirstRawMaterialToForm(materials);
+
+      if (materials.length === 0) {
+        toast.warning(`ไม่พบวัตถุดิบของ Part No. ${partNo}`);
+      }
+    } catch (error) {
+      if (latestBomRequestedRef.current !== partNo) return;
+
+      setRawMaterials([]);
+      syncInspectionRowsSmDefaults([]);
+      syncFirstRawMaterialToForm([]);
+
+      const status = error?.response?.status;
+
+      if (status === 404) {
+        toast.warning(`ไม่พบ BOM ของ Part No. ${partNo}`);
+      } else if (status >= 500) {
+        toast.error("เกิดข้อผิดพลาดจาก API ข้อมูล BOM");
+      } else {
+        toast.error("ไม่สามารถดึงข้อมูลวัตถุดิบได้");
+      }
+    } finally {
+      if (latestBomRequestedRef.current === partNo) {
+        setBomLoading(false);
+      }
+    }
+  };
+
+  const handleHeaderChange = (field, value) => {
+    setHeader((prev) => ({
+      ...prev,
+      [field]: value,
+      ...(field === "employeeId" ? { employeeName: "" } : {}),
+    }));
   };
 
   const setField = (field, value) => {
-    setForm((prev) => {
-      const updated = { ...prev, [field]: value };
-      const st = field === "startTime" ? value : prev.startTime;
-      const et = field === "endTime" ? value : prev.endTime;
-      if ((field === "startTime" || field === "endTime") && st && et) {
-        const diff = parseTime(et) - parseTime(st);
-        if (diff > 0) updated.usedTime = String(diff);
-      }
-      if (field === "goodQty" || field === "ngQty") {
-        const g = field === "goodQty" ? Number(value) : Number(prev.goodQty);
-        const n = field === "ngQty" ? Number(value) : Number(prev.ngQty);
-        updated.finishProdQty = g + n;
-      }
-      return updated;
+    setForm((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+  };
+
+  const updateInspectionRow = (rowId, field, value) => {
+    setInspectionRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== rowId) return row;
+
+        const nextRow = { ...row, [field]: value };
+
+        if (field === "length" || field === "defectQty") {
+          const rawLength = field === "length" ? value : row.length;
+          const rawDefect = field === "defectQty" ? value : row.defectQty;
+
+          if (rawLength !== "" || rawDefect !== "") {
+            const l = parseFloat(rawLength) || 0;
+            const d = parseFloat(rawDefect) || 0;
+            const sum = Math.round((l + d) * 10000) / 10000;
+            const computedQty = String(sum);
+
+            nextRow.materials = nextRow.materials.map((m) => ({
+              ...m,
+              qtyUsed: computedQty,
+            }));
+          } else {
+            nextRow.materials = nextRow.materials.map((m) => ({
+              ...m,
+              qtyUsed: "",
+            }));
+          }
+        }
+
+        return nextRow;
+      }),
+    );
+  };
+
+  const addInspectionRow = () => {
+    setInspectionRows((prev) => {
+      const previousRow = prev[prev.length - 1];
+
+      return [
+        ...prev,
+        {
+          ...createInspectionRow(),
+          status: "new",
+          startTime: previousRow?.finishTime || "",
+          prodName: previousRow?.prodName || header.employeeName,
+          materials: rawMaterials.map((material) => ({
+            materialItem: material.materialItem,
+            description: material.materialDescription,
+            qtyUsed: "",
+            lot: TODAY,
+            rollNumber: "",
+            judgment: "",
+          })),
+        },
+      ];
     });
-    if (errors[field])
-      setErrors((e) => {
-        const c = { ...e };
-        delete c[field];
-        return c;
-      });
   };
 
-  const validate = () => {
-    const errs = {};
-    if (!header.employeeId) errs.employeeId = "กรุณากรอกรหัสพนักงาน";
-    if (!header.employeeName) errs.employeeName = "รหัสพนักงานไม่ถูกต้อง";
-    if (!form.finishPartNo) errs.finishPartNo = "กรุณากรอก Part No. ชิ้นงาน";
-    const timeOk = (t) => t && t.includes(":") && t.split(":")[0].length >= 1 && t.split(":")[1].length >= 1;
-    if (!timeOk(form.startTime) || !timeOk(form.endTime))
-      errs.startTime = "กรุณากรอกเวลาเริ่ม-จบ";
-    if (!form.rawPartNo) errs.rawPartNo = "กรุณากรอก Part No. วัตถุดิบ";
-    if (!form.rawUsedQty || Number(form.rawUsedQty) <= 0)
-      errs.rawUsedQty = "กรุณากรอกจำนวนที่ใช้";
-    if (!form.rawRollNo) errs.rawRollNo = "กรุณากรอก Roll No.";
-    return errs;
+  const updateInspectionMaterial = (rowId, materialIndex, field, value) => {
+    setInspectionRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== rowId) return row;
+
+        return {
+          ...row,
+          materials: row.materials.map((material, index) => {
+            if (index === materialIndex) {
+              return {
+                ...material,
+                [field]: value,
+              };
+            }
+
+            return material;
+          }),
+        };
+      }),
+    );
   };
 
-  const handleSave = () => {
-    const errs = validate();
-    if (Object.keys(errs).length > 0) {
-      setErrors(errs);
-      window.scrollTo({ top: 0, behavior: "smooth" });
+  const fetchJobDetails = async () => {
+    const jobNumber = String(form.JobNumber || "").trim();
+
+    if (!jobNumber) {
+      toast.warning("กรุณากรอก Job No.");
       return;
     }
-    const record = {
-      id: Date.now(),
-      savedAt: new Date().toISOString(),
-      header: { ...header },
-      data: { ...form },
-    };
-    // TODO: เปลี่ยนเป็น API call:
-    // await fetch("/api/records", { method:"POST", body: JSON.stringify(record) })
-    const stored = localStorage.getItem(LS_KEY);
-    const existing = stored ? JSON.parse(stored) : [];
-    const updated = [...existing, record];
-    localStorage.setItem(LS_KEY, JSON.stringify(updated));
-    setRecordCount(updated.length);
-    setForm(EMPTY_FORM());
-    setErrors({});
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 3000);
-    setTimeout(() => jobRef.current?.focus(), 100);
+
+    if (jobLoading) return;
+
+    latestJobRequestedRef.current = jobNumber;
+    setJobLoading(true);
+
+    try {
+      const response = await axios.get(
+        `${API_BASE_URL}/api/jobs/get/${encodeURIComponent(jobNumber)}`,
+      );
+
+      const payload = Array.isArray(response.data)
+        ? response.data[0]
+        : response.data;
+
+      if (!payload) {
+        setForm((prev) => ({
+          ...prev,
+          stdThickness: "",
+          stdWidth: "",
+          stdLength: "",
+        }));
+
+        setRawMaterials([]);
+        syncFirstRawMaterialToForm([]);
+
+        toast.error(`ไม่พบข้อมูล Job ${jobNumber}`);
+        return;
+      }
+
+      if (latestJobRequestedRef.current !== jobNumber) return;
+
+      const thickness = payload.Thickness ?? payload.thickness ?? "";
+      const width = payload.Width ?? payload.width ?? "";
+      const length = payload.Length ?? payload.length ?? "";
+      const finishPartNo = payload.item || payload.Item || "";
+
+      setForm((prev) => ({
+        ...prev,
+        JobNumber: payload.job || payload.JobNumber || jobNumber,
+        PartNo: finishPartNo || prev.PartNo,
+        Description:
+          payload.description || payload.Description || prev.Description,
+        Color:
+          payload.colorName ||
+          payload.pvcColor ||
+          payload.colorCode ||
+          payload.Color ||
+          prev.Color,
+        stdThickness: String(thickness),
+        stdWidth: String(width),
+        stdLength: String(length),
+      }));
+
+      toast.success(`พบข้อมูล Job ${jobNumber}`);
+
+      await fetchBomDetails(finishPartNo || form.PartNo);
+    } catch (error) {
+      setForm((prev) => ({
+        ...prev,
+        stdThickness: "",
+        stdWidth: "",
+        stdLength: "",
+      }));
+
+      setRawMaterials([]);
+      syncFirstRawMaterialToForm([]);
+
+      const status = error?.response?.status;
+
+      if (status === 404) {
+        toast.error(`ไม่พบข้อมูล Job ${jobNumber}`);
+      } else if (status >= 500) {
+        toast.error("เกิดข้อผิดพลาดจาก API กรุณาลองใหม่อีกครั้ง");
+      } else {
+        toast.error("ไม่สามารถเชื่อมต่อ API ได้");
+      }
+    } finally {
+      setJobLoading(false);
+    }
   };
 
-  const hasError = Object.keys(errors).length > 0;
+  const handleFormKeyDown = (e) => {
+    if (e.key !== "Enter") return;
+
+    const target = e.target;
+    if (!target) return;
+
+    // ไม่ดักจับถ้าเป็น textarea (เพื่อให้ขึ้นบรรทัดใหม่ได้ตามปกติ)
+    if (target.tagName === "TEXTAREA") return;
+
+    // ถ้าเป็นปุ่มหรือลิงก์ ให้ Enter ทำงานตามค่าเริ่มต้นของปุ่ม (เช่น ปุ่มบันทึก)
+    if (target.tagName === "BUTTON" || target.tagName === "A") return;
+
+    // จัดการเฉพาะ input และ select
+    if (target.tagName !== "INPUT" && target.tagName !== "SELECT") return;
+
+    const focusableSelector = [
+      'input:not([disabled]):not([type="hidden"]):not([readonly]):not([tabindex="-1"])',
+      'select:not([disabled]):not([tabindex="-1"])',
+      'textarea:not([disabled]):not([readonly]):not([tabindex="-1"])',
+      'button:not([disabled]):not([tabindex="-1"])',
+    ].join(", ");
+
+    const allElements = Array.from(
+      document.querySelectorAll(focusableSelector),
+    ).filter((el) => {
+      return (
+        el.offsetWidth > 0 ||
+        el.offsetHeight > 0 ||
+        el.getClientRects().length > 0 ||
+        el === target
+      );
+    });
+
+    const currentIndex = allElements.indexOf(target);
+    if (currentIndex === -1) return;
+
+    e.preventDefault();
+
+    if (e.shiftKey) {
+      // Shift + Enter: ไปช่องก่อนหน้า
+      for (let i = currentIndex - 1; i >= 0; i--) {
+        const prevElement = allElements[i];
+        if (prevElement) {
+          prevElement.focus();
+          if (
+            prevElement.tagName === "INPUT" &&
+            typeof prevElement.select === "function"
+          ) {
+            try {
+              prevElement.select();
+            } catch {}
+          }
+          break;
+        }
+      }
+    } else {
+      // Enter: ไปช่องถัดไป
+      for (let i = currentIndex + 1; i < allElements.length; i++) {
+        const nextElement = allElements[i];
+        if (nextElement) {
+          nextElement.focus();
+          if (
+            nextElement.tagName === "INPUT" &&
+            typeof nextElement.select === "function"
+          ) {
+            try {
+              nextElement.select();
+            } catch {}
+          }
+          break;
+        }
+      }
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-800 ">
+    <div
+      className="min-h-screen bg-slate-100 text-slate-800 "
+      onKeyDown={handleFormKeyDown}
+    >
+      <ToastContainer
+        position="top-right"
+        autoClose={2500}
+        hideProgressBar={false}
+        newestOnTop
+        closeOnClick
+        pauseOnHover
+        draggable
+        theme="light"
+        style={{ zIndex: 99999 }}
+      />
       <AppNavbar />
       <div className="bg-linear-to-r from-[#03045E] via-[#023E8A] to-[#00B4D8] text-white  shadow-md px-4 py-4">
-        <div className="max-w-screen-2xl mx-auto flex items-center justify-between">
+        <div className="max-w-screen-2xl mx-auto">
           <div>
             <h1 className="text-2xl font-bold text-slate-100">
               รายงานการผลิต EMBOSS
             </h1>
-            
           </div>
-          
+        </div>
+      </div>
+
+      <div className="px-3 my-2">
+        <div className="max-w-screen-2xl mx-auto flex flex-wrap justify-between items-center gap-x-4 gap-y-2 text-xs">
+          {/* ปุ่มกลับ */}
           <Link
-            href="/form/records"
-            className="relative flex items-center gap-2 px-4 py-2 bg-blue-800 hover:bg-blue-700 text-white text-sm font-medium rounded-lg shadow-sm transition-colors"
+            href={backHref}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-600 shadow-sm transition-colors hover:bg-slate-50 hover:text-blue-700"
           >
-            รายการที่บันทึก
-            {mounted && recordCount > 0 && (
-              <span className="absolute -top-2 -right-2 w-5 h-5 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                {recordCount}
-              </span>
-            )}
+            ← กลับ
           </Link>
-        </div>
-      </div>
 
-      <div className="px-3  my-2">
-  <div className="max-w-screen-2xl mx-auto flex flex-wrap justify-end items-center gap-x-4 gap-y-2 text-xs">
-    
-    {/* 1. วันที่ */}
-    <div className="flex items-center gap-1.5 bg-white/80 px-2.5 py-1 rounded-lg border border-slate-200/60 shadow-2xs">
-      <span className="text-slate-500 font-medium">วันที่:</span>
-      <input
-        type="text"
-        value={header.reportDate}
-        readOnly
-        disabled
-        className="bg-transparent focus:outline-none text-slate-800 font-semibold w-24 cursor-default"
-      />
-    </div>
-
-    {/* 2. กะ */}
-    <div className="flex items-center gap-1.5 bg-white/80 px-2.5 py-1 rounded-lg border border-slate-200/60 shadow-2xs">
-      <span className="text-slate-500 font-medium">กะ:</span>
-      <HeaderSelect
-        value={header.shift}
-        onChange={(v) => handleHeaderChange("shift", v)}
-        options={[
-          { value: "Day", label: "เช้า" },
-          { value: "Night", label: "ดึก" },
-        ]}
-      />
-    </div>
-
-    {/* 3. เครื่อง */}
-    <div className="flex items-center gap-1.5 bg-white/80 px-2.5 py-1 rounded-lg border border-slate-200/60 shadow-2xs">
-      <span className="text-slate-500 font-medium">เครื่อง:</span>
-      <HeaderSelect
-        value={header.machineNo}
-        onChange={(v) => handleHeaderChange("machineNo", v)}
-        options={[
-          { value: "EMBOSS-01", label: "EMBOSS-01" },
-          { value: "EMBOSS-02", label: "EMBOSS-02" },
-        ]}
-      />
-    </div>
-
-    {/* 4. รหัสพนักงาน */}
-    <div className="flex items-center gap-2 bg-white/80 px-2.5 py-1 rounded-lg border border-slate-200/60 shadow-2xs">
-      <span className="text-slate-500 font-medium">รหัสพนักงาน:</span>
-      
-      <div className="relative flex items-center">
-        <input
-          type="text"
-          placeholder="ระบุรหัส"
-          value={header.employeeId}
-          onChange={(e) =>
-            handleHeaderChange("employeeId", e.target.value.toUpperCase())
-          }
-          onBlur={handleEmployeeIdBlur}
-          className={`bg-white px-2 py-0.5 rounded-md border text-xs text-slate-800 font-semibold uppercase transition-all duration-150 focus:outline-none focus:ring-2 w-22 placeholder:text-slate-300 placeholder:font-normal ${
-            errors.employeeId || empError
-              ? "border-rose-400 focus:ring-rose-200 bg-rose-50/30"
-              : "border-slate-300 focus:border-blue-500 focus:ring-blue-100"
-          }`}
-        />
-      </div>
-
-      {/* Tag ชื่อพนักงานเมื่อยืนยันผ่าน */}
-      {header.employeeName && (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-medium text-[11px] border border-emerald-200/60 animate-fade-in">
-          <Check className="w-3 h-3 text-emerald-600 stroke-[2.5]" />
-          {header.employeeName}
-        </span>
-      )}
-
-      {/* ข้อความแสดง Error */}
-      {(empError || errors.employeeId) && (
-        <span className="text-rose-500 font-medium text-[11px] flex items-center gap-1 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200/60">
-          ⚠️ {empError || errors.employeeId}
-        </span>
-      )}
-    </div>
-
-  </div>
-</div>
-
-      {(hasError || saveSuccess) && (
-        <div className="max-w-screen-2xl mx-auto px-4 mt-3 space-y-2">
-          {hasError && (
-            <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 flex items-start gap-2.5 shadow-sm">
-              <CircleX className="w-4 h-4 text-rose-500 mt-0.5 shrink-0" />
-              <div>
-                <p className="text-sm font-semibold text-rose-700">
-                  กรุณากรอกข้อมูลให้ครบถ้วน
-                </p>
-                <p className="text-xs text-rose-600 mt-0.5">
-                  {Object.values(errors)[0]}
-                </p>
-              </div>
-            </div>
-          )}
-          {saveSuccess && (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 flex items-center gap-2.5">
-              <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-              <p className="text-sm font-semibold text-emerald-700">
-                บันทึกรายการเรียบร้อย! กรอกรายการต่อไปได้เลย
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="max-w-screen-2xl mx-auto px-4 py-4 pb-24 space-y-4">
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-visible">
-          <div className="flex items-center gap-2 px-5 py-3 bg-blue-50 border-b border-blue-100">
-            <BrickWall className="w-4 h-4 text-slate-600" />
-            <div>
-              <h2 className="text-sm font-bold text-slate-800">
-                ส่วนที่ 1 — รายละเอียดชิ้นงานที่ผลิต
-              </h2>
-              <p className=" text-xs text-slate-500">
-                <span className="text-red-500">*</span>กรอกข้อมูลชิ้นงาน
-                งานดี-งานเสีย และเวลาการผลิต
-              </p>
-            </div>
-          </div>
-          <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-4">
-            <div className="sm:col-span-2 lg:col-span-1">
-              <label className="flex text-xs font-semibold text-slate-600 mb-1 items-center gap-1">
-                <ScanBarcode className="w-3.5 h-3.5" />
-                Job (สแกน Barcode)
-              </label>
-              <input
-                ref={jobRef}
-                type="text"
-                value={form.job}
-                placeholder="สแกนหรือพิมพ์ Job No."
-                onChange={(e) => setField("job", e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:bg-white focus:border-blue-400 focus:outline-none transition font-mono"
-              />
-            </div>
-            <div
-              className={
-                errors.finishPartNo ? "ring-1 ring-rose-400 rounded-lg p-1" : ""
-              }
-            >
-              <label className="block text-xs font-semibold text-slate-600 mb-1">
-                Part No. <span className="text-red-500">*</span>
-              </label>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            {/* วันที่ */}
+            <div className="flex items-center gap-1.5 bg-white/80 px-2.5 py-1 rounded-lg border border-slate-200/60 shadow-2xs">
+              <span className="text-slate-500 font-medium">วันที่:</span>
               <input
                 type="text"
-                value={form.finishPartNo}
-                onChange={(e) => setField("finishPartNo", e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:bg-white focus:border-blue-400 focus:outline-none transition"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1">
-                ชื่อชิ้นงาน
-              </label>
-              <input
-                type="text"
-                value={form.finishMaterial}
-                onChange={(e) => setField("finishMaterial", e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:bg-white focus:border-blue-400 focus:outline-none transition"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1">
-                สี
-              </label>
-              <input
-                type="text"
-                value={form.finishColor}
-                onChange={(e) => setField("finishColor", e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center focus:bg-white focus:border-blue-400 focus:outline-none transition"
-              />
-            </div>
-            <div className="grid grid-cols-3 gap-2 sm:col-span-2 lg:col-span-1">
-              {[
-                ["finishThick", "หนา (mm.)"],
-                ["finishWidth", "กว้าง (mm.)"],
-                ["finishLength", "ยาว (m.)"],
-              ].map(([f, l]) => (
-                <div key={f}>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">
-                    {l}
-                  </label>
-                  <input
-                    type="text"
-                    value={form[f]}
-                    onChange={(e) => setField(f, e.target.value)}
-                    className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-right focus:bg-white focus:border-blue-400 focus:outline-none transition"
-                  />
-                </div>
-              ))}
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-emerald-700 mb-1">
-                งานดี (M.) <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="number"
-                value={form.goodQty}
-                onChange={(e) => setField("goodQty", Number(e.target.value))}
-                className="w-full px-3 py-2 bg-emerald-50 border border-emerald-300 rounded-lg text-sm text-right font-bold text-emerald-800 focus:outline-none transition"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-rose-700 mb-1">
-                งานเสีย (M.) <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="number"
-                value={form.ngQty}
-                onChange={(e) => setField("ngQty", Number(e.target.value))}
-                className="w-full px-3 py-2 bg-rose-50 border border-rose-300 rounded-lg text-sm text-right font-bold text-rose-800 focus:outline-none transition"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-blue-700 mb-1">
-                จำนวนที่ผลิต
-              </label>
-              <input
-                type="number"
-                value={form.finishProdQty}
+                value={header.reportDate}
                 readOnly
-                className="w-full px-3 py-2 bg-blue-100 border border-blue-200 rounded-lg text-sm text-right font-bold text-blue-900 cursor-default"
+                disabled
+                className="bg-transparent focus:outline-none text-slate-800 font-semibold w-24 cursor-default"
               />
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1">
-                สาเหตุงานเสีย
-              </label>
-              <FormSelect
-                value={form.ngReason}
-                onChange={(v) => setField("ngReason", v)}
+
+            {/* กะ */}
+            <div className="flex items-center gap-1.5 bg-white/80 px-2.5 py-1 rounded-lg border border-slate-200/60 shadow-2xs">
+              <span className="text-slate-500 font-medium">กะ:</span>
+              <HeaderSelect
+                value={header.shift}
+                disabled={isViewMode}
+                onChange={(v) => handleHeaderChange("shift", v)}
                 options={[
-                  { value: "-", label: "- ไม่มีงานเสีย -" },
-                  { value: "เปลี่ยนม้วน", label: "เปลี่ยนม้วน" },
-                  { value: "ท่ออุดตัน", label: "ท่ออุดตัน" },
-                  { value: "ไม่เรียบ", label: "ไม่เรียบ" },
-                  { value: "ปรับระดับ", label: "ปรับระดับ" },
+                  { value: "Day", label: "เช้า" },
+                  { value: "Night", label: "ดึก" },
                 ]}
               />
             </div>
-            <div
-              className={`${errors.startTime ? "ring-1 ring-rose-400 rounded-lg p-1" : ""} sm:col-span-2 lg:col-span-1`}
-            >
-              <label className="block text-xs font-semibold text-slate-600 mb-1">
-                เวลา (เริ่ม – จบ) <span className="text-red-500">*</span>
-              </label>
-              <div className="flex items-center gap-2">
-                <TimeInput className='text-slate-600'
-                  value={form.startTime}
-                  onChange={(v) => setField("startTime", v)}
-                />
-                <span className="text-slate-600 shrink-0 font-semibold">–</span>
-                <TimeInput className='text-slate-600'
-                  value={form.endTime}
-                  onChange={(v) => setField("endTime", v)}
-                />
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-screen-2xl mx-auto px-4 py-4 space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-visible">
+            <div className="flex items-center gap-2 px-5 py-3 bg-blue-50 border-b border-blue-100">
+              <BrickWall className="w-4 h-4 text-slate-600" />
+              <div>
+                <h2 className="text-sm font-bold text-slate-800">
+                  ส่วนที่ 1 — ข้อมูล Item และ BOM
+                </h2>
+                <p className="text-xs text-slate-500">
+                  แสดงข้อมูลชิ้นงานและ BOM (Part No. / Description / Color)
+                </p>
               </div>
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1">
-                ใช้เวลา (นาที)
-              </label>
-              <input
-                type="text"
-                value={form.usedTime}
-                readOnly
-                className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-center text-slate-600 cursor-default"
-              />
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="flex text-xs font-semibold text-slate-600 mb-1 items-center gap-1">
+                  <ScanBarcode className="w-3.5 h-3.5" />
+                  Job (สแกน Barcode)
+                </label>
+                <input
+                  ref={jobRef}
+                  type="text"
+                  value={form.JobNumber}
+                  disabled={isViewMode}
+                  placeholder="สแกนหรือพิมพ์ Job No."
+                  onChange={(e) => {
+                    setField("JobNumber", e.target.value);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      fetchJobDetails();
+                    }
+                  }}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:bg-white focus:border-blue-400 focus:outline-none transition font-mono"
+                />
+                {jobLoading && (
+                  <div className="mt-1.5 min-h-4 text-[11px]">
+                    <span className="inline-flex items-center gap-1 text-blue-600 font-medium">
+                      <LoaderCircle className="w-3 h-3 animate-spin" />
+                      กำลังค้นหา Job...
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                {/* Item */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+                  <div className="lg:col-span-3">
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Part No. <span className="text-red-500">*</span>
+                    </label>
+
+                    <input
+                      type="text"
+                      value={form.PartNo}
+                      disabled={isViewMode}
+                      onChange={(e) => {
+                        setField("PartNo", e.target.value);
+                      }}
+                      onBlur={() => fetchBomDetails(form.PartNo)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          fetchBomDetails(form.PartNo);
+                        }
+                      }}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-400 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="lg:col-span-5">
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Description
+                    </label>
+
+                    <input
+                      type="text"
+                      value={form.Description}
+                      disabled={isViewMode}
+                      onChange={(e) => setField("Description", e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-400 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="lg:col-span-2">
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Color
+                    </label>
+
+                    <input
+                      type="text"
+                      value={form.Color}
+                      disabled={isViewMode}
+                      onChange={(e) => setField("Color", e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-center focus:border-blue-400 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="lg:col-span-2">
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Standard
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        placeholder="กว้าง"
+                        value={form.stdWidth}
+                        disabled={isViewMode}
+                        onChange={(e) => setField("stdWidth", e.target.value)}
+                        className="w-1/2 px-1.5 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-center font-mono focus:bg-white focus:border-blue-400 focus:outline-none"
+                      />
+                      <span className="text-slate-400 text-xs">×</span>
+                      <input
+                        type="text"
+                        placeholder="ยาว"
+                        value={form.stdLength}
+                        disabled={isViewMode}
+                        onChange={(e) => setField("stdLength", e.target.value)}
+                        className="w-1/2 px-1.5 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-center font-mono focus:bg-white focus:border-blue-400 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* BOM Loading / Error */}
+                {bomLoading && (
+                  <div className="text-[11px]">
+                    <span className="inline-flex items-center gap-1 text-blue-600 font-medium">
+                      <LoaderCircle className="w-3 h-3 animate-spin" />
+                      กำลังค้นหาวัตถุดิบ...
+                    </span>
+                  </div>
+                )}
+
+                {/* BOM rows */}
+                {!bomLoading && rawMaterials.length > 0 && (
+                  <div className="space-y-1">
+                    {rawMaterials.map((row, index) => (
+                      <div
+                        key={`${row.materialItem}-${index}`}
+                        className="grid grid-cols-1 lg:grid-cols-12 gap-3 text-xs"
+                      >
+                        <div className="lg:col-span-3 px-3 py-1.5 text-slate-600">
+                          {row.materialItem || "-"}
+                        </div>
+
+                        <div className="lg:col-span-7 px-3 py-1.5 text-slate-600">
+                          {row.materialDescription || "-"}
+                        </div>
+
+                        <div className="lg:col-span-2 px-3 py-1.5 text-slate-600 text-center">
+                          {row.materialColor || "-"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1">
-                Product Code
-              </label>
-              <input
-                type="text"
-                value={form.prodCode}
-                onChange={(e) => setField("prodCode", e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center font-mono focus:bg-white focus:border-blue-400 focus:outline-none transition"
-              />
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <div className="flex items-center gap-2 px-5 py-3 bg-slate-50 border-b border-slate-200">
+              <Thermometer className="w-4 h-4 text-slate-600" />
+              <div>
+                <h2 className="text-sm font-bold text-slate-800">
+                  ส่วนที่ 3 — การตั้งค่าเครื่องจักร
+                </h2>
+                <p className="text-xs text-slate-400">
+                  <span className="text-red-500">*</span>อุณหภูมิ(Standard ={" "}
+                  {TEMP_STD}){" "}
+                </p>
+              </div>
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1">
-                LOT No.
-              </label>
-              <input
-                type="text"
-                value={form.finishLot || ""}
-                disabled
-                readOnly
-                className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-slate-600 cursor-not-allowed outline-none select-none"
-              />
+            <div className="p-5 space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">
+                    Speed (m/min) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={form.Speed}
+                    disabled={isViewMode}
+                    placeholder="เช่น 3.0"
+                    onChange={(e) => setField("Speed", e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center focus:bg-white focus:border-blue-400 focus:outline-none transition disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">
+                    อุณหภูมิน้ำหล่อเย็น (°C) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={form.TemperatureCooler}
+                    disabled={isViewMode}
+                    placeholder="เช่น 20"
+                    onChange={(e) =>
+                      setField("TemperatureCooler", e.target.value)
+                    }
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center focus:bg-white focus:border-blue-400 focus:outline-none transition disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">
+                    การติดกันของโฟมกับฟิล์ม <span className="text-red-500">*</span>
+                  </label>
+                  <FormSelect
+                    value={form.AdhesiveCheck}
+                    disabled={isViewMode}
+                    onChange={(v) => setField("AdhesiveCheck", v)}
+                    colorMap={{
+                      OK: "bg-emerald-100 border-emerald-300 text-emerald-800",
+                      NG: "bg-rose-100 border-rose-300 text-rose-800",
+                      HOLD: "bg-amber-100 border-amber-300 text-amber-800",
+                    }}
+                    options={[
+                      { value: "OK", label: "OK", dot: "bg-emerald-500" },
+                      { value: "NG", label: "NG", dot: "bg-rose-500" },
+                      { value: "HOLD", label: "HOLD", dot: "bg-amber-500" },
+                    ]}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">
+                    หมายเหตุ
+                  </label>
+                  <input
+                    type="text"
+                    value={form.Remarks}
+                    disabled={isViewMode}
+                    placeholder="หมายเหตุ..."
+                    onChange={(e) => setField("Remarks", e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:bg-white focus:border-blue-400 focus:outline-none transition disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center gap-3 mb-3 text-xs flex-wrap">
+                  <span className="font-semibold text-slate-600">
+                    อุณหภูมิ Heater:
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-3 h-3 rounded bg-emerald-100 border border-emerald-400 inline-block"></span>
+                    <span className="text-emerald-700">= {TEMP_STD} ปกติ</span>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-3 h-3 rounded bg-rose-100 border border-rose-400 inline-block"></span>
+                    <span className="text-rose-700">ผิดปกติ</span>
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+                  {[
+                    { n: 1, pos: "บนซ้าย" },
+                    { n: 2, pos: "บนกลาง" },
+                    { n: 3, pos: "บนขวา" },
+                    { n: 4, pos: "ล่างซ้าย" },
+                    { n: 5, pos: "ล่างขวา" },
+                    { n: 6, pos: "กลางล่าง" },
+                  ].map(({ n, pos }) => {
+                    const fieldKey = `Temperature${n}`;
+                    const val = form[fieldKey];
+                    return (
+                      <div key={n} className="text-center">
+                        <p className="text-[11px] font-bold text-slate-700 mb-0.5">
+                          อุณหภูมิ {n}
+                        </p>
+                        <p className="text-[10px] text-slate-500 mb-1.5">
+                          {pos}
+                        </p>
+                        <div className="w-14 mx-auto border border-slate-200 rounded-lg bg-white shadow-sm overflow-hidden">
+                          <input
+                            type="text"
+                            value={val}
+                            disabled={isViewMode}
+                            onChange={(e) => setField(fieldKey, e.target.value)}
+                            placeholder={String(TEMP_STD)}
+                            className={`w-full text-center text-sm font-mono py-2.5 border-0 focus:outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${getTempClass(val)}`}
+                          />
+                          <div className="border-t border-slate-200 py-0.5 text-[10px] font-bold text-slate-400 text-center">
+                            {TEMP_STD} (°C)
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -746,239 +1851,435 @@ export default function EmbossFormPage() {
             <CirclePile className="w-4 h-4 text-slate-600" />
             <div>
               <h2 className="text-sm font-bold text-slate-800">
-                ส่วนที่ 2 — รายละเอียดวัตถุดิบที่ใช้
+                ส่วนที่ 2 — ตารางกรอกข้อมูลหน้างาน
               </h2>
-              <p className="text-xs text-slate-400">ข้อมูลอ้างอิงจากระบบ — ไม่สามารถแก้ไขได้</p>
-            </div>
-          </div>
-          <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1">Job No.</label>
-              <input
-                type="text"
-                value={form.job}
-                readOnly
-                className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm font-mono text-slate-600 cursor-not-allowed outline-none select-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1">Part No.</label>
-              <input
-                type="text"
-                value={form.rawPartNo}
-                readOnly
-                className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-slate-600 cursor-not-allowed outline-none select-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1">ชื่อวัตถุดิบ</label>
-              <input
-                type="text"
-                value={form.rawMaterial}
-                readOnly
-                className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-slate-600 cursor-not-allowed outline-none select-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1">สี</label>
-              <input
-                type="text"
-                value={form.rawColor}
-                readOnly
-                className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-center text-slate-600 cursor-not-allowed outline-none select-none"
-              />
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                ["rawThick", "หนา (mm.)"],
-                ["rawWidth", "กว้าง (mm.)"],
-                ["rawLength", "ยาว (m.)"],
-              ].map(([f, l]) => (
-                <div key={f}>
-                  <label className="block text-xs font-semibold text-slate-500 mb-1">{l}</label>
-                  <input
-                    type="text"
-                    value={form[f]}
-                    readOnly
-                    className="w-full px-2 py-2 bg-slate-100 border border-slate-200 rounded-lg text-xs text-right text-slate-600 cursor-not-allowed outline-none select-none"
-                  />
-                </div>
-              ))}
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1">จำนวนที่ใช้ (M.)</label>
-              <input
-                type="text"
-                value={form.rawUsedQty}
-                readOnly
-                className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-right text-slate-600 cursor-not-allowed outline-none select-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1">LOT No.</label>
-              <input
-                type="text"
-                value={form.rawLot || ""}
-                disabled
-                readOnly
-                className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-slate-600 cursor-not-allowed outline-none select-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1">Roll No.</label>
-              <input
-                type="text"
-                value={form.rawRollNo}
-                readOnly
-                className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-center text-slate-600 cursor-not-allowed outline-none select-none"
-              />
-            </div>
-          </div>
-        </div>
-
-
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="flex items-center gap-2 px-5 py-3 bg-slate-50 border-b border-slate-200">
-            <Thermometer className="w-4 h-4 text-slate-600" />
-            <div>
-              <h2 className="text-sm font-bold text-slate-800">
-                ส่วนที่ 3 — การตั้งค่าเครื่องจักร
-              </h2>
-              <p className="text-xs text-slate-400">
-                <span className="text-red-500">*</span>อุณหภูมิ(Standard ={" "}
-                {TEMP_STD}){" "}
+              <p className="text-xs text-slate-500">
+                แบ่งเป็น FG Part (ข้อมูลชิ้นงาน) และ SM Part
+                (ข้อมูลวัตถุดิบที่ใช้) ต่อม้วน
               </p>
             </div>
           </div>
-          <div className="p-5 space-y-4">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">
-                  Speed (m/min)
-                </label>
-                <input
-                  type="text"
-                  value={form.speed}
-                  placeholder="เช่น 3.0"
-                  onChange={(e) => setField("speed", e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center focus:bg-white focus:border-blue-400 focus:outline-none transition"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">
-                  อุณหภูมิน้ำหล่อเย็น (°C)
-                </label>
-                <input
-                  type="text"
-                  value={form.waterfallTemp}
-                  placeholder="เช่น 20"
-                  onChange={(e) => setField("waterfallTemp", e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center focus:bg-white focus:border-blue-400 focus:outline-none transition"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">
-                  การติดกันของโฟมกับฟิล์ม
-                </label>
-                <FormSelect
-                  value={form.status}
-                  onChange={(v) => setField("status", v)}
-                  colorMap={{
-                    OK: "bg-emerald-100 border-emerald-300 text-emerald-800",
-                    NG: "bg-rose-100 border-rose-300 text-rose-800",
-                    HOLD: "bg-amber-100 border-amber-300 text-amber-800",
-                  }}
-                  options={[
-                    { value: "OK", label: "OK", dot: "bg-emerald-500" },
-                    { value: "NG", label: "NG", dot: "bg-rose-500" },
-                    { value: "HOLD", label: "HOLD", dot: "bg-amber-500" },
-                  ]}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">
-                  หมายเหตุ
-                </label>
-                <input
-                  type="text"
-                  value={form.remark}
-                  placeholder="หมายเหตุ..."
-                  onChange={(e) => setField("remark", e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:bg-white focus:border-blue-400 focus:outline-none transition"
-                />
-              </div>
-            </div>
-            <div>
-              <div className="flex items-center gap-3 mb-3 text-xs flex-wrap">
-                <span className="font-semibold text-slate-600">อุณหภูมิ Heater:</span>
-                <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded bg-emerald-100 border border-emerald-400 inline-block"></span>
-                  <span className="text-emerald-700">= {TEMP_STD} ปกติ</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded bg-rose-100 border border-rose-400 inline-block"></span>
-                  <span className="text-rose-700">ผิดปกติ</span>
-                </span>
-              </div>
-              <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
-                {[
-                  { n: 1, pos: "บนซ้าย" },
-                  { n: 2, pos: "บนกลาง" },
-                  { n: 3, pos: "บนขวา" },
-                  { n: 4, pos: "ล่างซ้าย" },
-                  { n: 5, pos: "ล่างขวา" },
-                  { n: 6, pos: "กลางล่าง" },
-                ].map(({ n, pos }) => {
-                  const val = form[`temp${n}Top`];
-                  return (
-                    <div key={n} className="text-center">
-                      <p className="text-[11px] font-bold text-slate-700 mb-0.5">อุณหภูมิ {n}</p>
-                      <p className="text-[10px] text-slate-500 mb-1.5">{pos}</p>
-                      <div className="w-14 mx-auto border border-slate-200 rounded-lg bg-white shadow-sm overflow-hidden">
-                        <input
-                          type="number"
-                          value={val}
-                          onChange={(e) => setField(`temp${n}Top`, e.target.value)}
-                          placeholder={String(TEMP_STD)}
-                          className={`w-full text-center text-sm font-mono py-2.5 border-0 focus:outline-none transition-colors ${getTempClass(val)}`}
-                        />
-                        <div className="border-t border-slate-200 py-0.5 text-[10px] font-bold text-slate-400 text-center">
-                          {TEMP_STD} (°C)
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 shadow-lg z-20">
-        <div className="max-w-screen-2xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="text-xs text-slate-500">
-            {mounted && recordCount > 0 ? (
-              <span>
-                บันทึกแล้ว{" "}
-                <span className="font-bold text-blue-800">{recordCount}</span>{" "}
-                รายการในกะนี้
-              </span>
-            ) : (
-              <span className="text-slate-400">ยังไม่มีรายการที่บันทึก</span>
+          <div className="p-4 sm:p-5">
+
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+              <table className="w-full min-w-7xl border-collapse text-xs sm:text-sm">
+                <thead>
+                  <tr className="bg-sky-50 text-[11px] font-semibold text-slate-600 sm:text-xs">
+                    <th
+                      rowSpan={2}
+                      className="sticky left-0 z-10 border-b border-r border-slate-200 bg-sky-50 px-3 py-2.5 text-center"
+                    >
+                      ม้วนที่
+                    </th>
+                    <th
+                      colSpan={8}
+                      className="border-b border-r border-slate-200 bg-blue-50 px-3 py-1.5 text-center text-slate-700"
+                    >
+                      FG Part
+                    </th>
+                    <th
+                      colSpan={5}
+                      className="border-b border-r border-slate-200 bg-emerald-50 px-3 py-1.5 text-center text-slate-700"
+                    >
+                      SM Part
+                    </th>
+                    <th
+                      rowSpan={2}
+                      className="border-b border-slate-200 px-3 py-2.5 text-center"
+                    >
+                      บันทึก
+                    </th>
+                  </tr>
+                  <tr className="bg-sky-50 text-[11px] font-semibold text-slate-600 sm:text-xs">
+                    {/* FG Part */}
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      เวลาเริ่ม
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      หนา 
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      กว้าง 
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      ยาว 
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      งานเสีย
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      สาเหตุ
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      เวลาสิ้นสุด
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      พนักงานผลิต
+                    </th>
+                    {/* SM Part */}
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      วัตถุดิบ
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      จำนวนที่ใช้
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      Lot
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      Roll Number
+                    </th>
+                    <th className="border-b border-r border-slate-200 px-2 py-2.5 text-center">
+                      Judgment
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {inspectionRows.map((row, index) => {
+                    const activeStdWidth =
+                      form.stdWidth || rawMaterials[0]?.materialWidth || "";
+                    const activeStdLength =
+                      form.stdLength || rawMaterials[0]?.materialLength || "";
+
+                    const outOfSpec = isThicknessOutOfSpec(row.thickness);
+                    const widthOutOfSpec = isWidthOutOfSpec(
+                      row.width,
+                      activeStdWidth,
+                    );
+                    const lengthOutOfSpec = isLengthOutOfSpec(
+                      row.length,
+                      activeStdLength,
+                    );
+                    const isLocked = row.status === "locked";
+                    return (
+                      <tr
+                        key={row.id}
+                        className={`group transition-colors ${
+                          isLocked ? "bg-slate-100/70" : "hover:bg-sky-50/40"
+                        }`}
+                      >
+                        <td
+                          className={`sticky left-0 z-10 border-b border-r border-slate-100 px-3 py-2 text-center font-semibold text-slate-700 ${
+                            isLocked
+                              ? "bg-slate-100"
+                              : "bg-white group-hover:bg-sky-50/40"
+                          }`}
+                        >
+                          {index + 1}
+                        </td>
+
+                        {/* FG Part */}
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <HHMMInput
+                            value={row.startTime}
+                            disabled={isLocked}
+                            onChange={(value) =>
+                              updateInspectionRow(row.id, "startTime", value)
+                            }
+                            containerClassName="flex items-center rounded-lg border border-slate-200 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-sky-100 focus-within:border-sky-400"
+                            inputClassName="w-8 bg-transparent px-0 py-1.5 text-center text-xs font-mono text-slate-700 outline-none placeholder-slate-400 disabled:cursor-not-allowed disabled:text-slate-400 disabled:opacity-60"
+                          />
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-1.5 py-1.5">
+                          <input
+                            type="text"
+                            value={row.thickness}
+                            disabled={isLocked}
+                            onChange={(e) =>
+                              updateInspectionRow(
+                                row.id,
+                                "thickness",
+                                e.target.value,
+                              )
+                            }
+                            className={`w-20 rounded-lg border px-2 py-1.5 text-center text-xs outline-none transition-colors focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${
+                              outOfSpec
+                                ? "border-rose-300 bg-rose-50 text-rose-700 focus:border-rose-400 focus:ring-rose-100 font-semibold"
+                                : "border-slate-200 bg-white text-slate-800 focus:border-sky-400 focus:ring-sky-100"
+                            }`}
+                          />
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-1.5 py-1.5">
+                          <input
+                            type="text"
+                            value={row.width}
+                            disabled={isLocked}
+                            onChange={(e) =>
+                              updateInspectionRow(
+                                row.id,
+                                "width",
+                                e.target.value,
+                              )
+                            }
+                            className={`w-20 rounded-lg border px-2 py-1.5 text-center text-xs outline-none transition-colors focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${
+                              widthOutOfSpec
+                                ? "border-rose-300 bg-rose-50 text-rose-700 focus:border-rose-400 focus:ring-rose-100 font-semibold"
+                                : "border-slate-200 bg-white text-slate-800 focus:border-sky-400 focus:ring-sky-100"
+                            }`}
+                          />
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <input
+                            type="text"
+                            value={row.length}
+                            disabled={isLocked}
+                            onChange={(e) =>
+                              updateInspectionRow(
+                                row.id,
+                                "length",
+                                e.target.value,
+                              )
+                            }
+                            className={`w-24 rounded-lg border px-2 py-1.5 text-center text-xs outline-none transition-colors focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${
+                              lengthOutOfSpec
+                                ? "border-rose-300 bg-rose-50 text-rose-700 focus:border-rose-400 focus:ring-rose-100 font-semibold"
+                                : "border-slate-200 bg-white text-slate-800 focus:border-sky-400 focus:ring-sky-100"
+                            }`}
+                          />
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <input
+                            type="text"
+                            value={row.defectQty}
+                            disabled={isLocked}
+                            onChange={(e) =>
+                              updateInspectionRow(
+                                row.id,
+                                "defectQty",
+                                e.target.value,
+                              )
+                            }
+                            className="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-xs outline-none transition-colors focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          />
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <input
+                            type="text"
+                            value={row.reason}
+                            disabled={isLocked}
+                            placeholder="สาเหตุงานเสีย"
+                            onChange={(e) =>
+                              updateInspectionRow(
+                                row.id,
+                                "reason",
+                                e.target.value,
+                              )
+                            }
+                            className="w-32 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-xs outline-none transition-colors focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          />
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <HHMMInput
+                            value={row.finishTime}
+                            disabled={isLocked}
+                            onChange={(value) =>
+                              updateInspectionRow(row.id, "finishTime", value)
+                            }
+                            containerClassName="flex items-center rounded-lg border border-slate-200 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-sky-100 focus-within:border-sky-400"
+                            inputClassName="w-8 bg-transparent px-0 py-1.5 text-center text-xs font-mono text-slate-700 outline-none placeholder-slate-400 disabled:cursor-not-allowed disabled:text-slate-400 disabled:opacity-60"
+                          />
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <input
+                            type="text"
+                            value={row.prodName}
+                            disabled={isLocked}
+                            onChange={(e) =>
+                              updateInspectionRow(
+                                row.id,
+                                "prodName",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="ชื่อพนักงาน"
+                            className="w-28 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-xs outline-none transition-colors focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          />
+                        </td>
+
+                        {/* SM Part */}
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <div className="space-y-1">
+                            {row.materials.map((material, materialIndex) => (
+                              <div
+                                key={materialIndex}
+                                className="py-1.5 text-center text-xs font-semibold text-slate-700"
+                              >
+                                {materialIndex + 1}
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <div className="space-y-1">
+                            {row.materials.map((material, materialIndex) => (
+                              <input
+                                key={materialIndex}
+                                type="text"
+                                value={material.qtyUsed}
+                                disabled={isLocked}
+                                onChange={(e) =>
+                                  updateInspectionMaterial(
+                                    row.id,
+                                    materialIndex,
+                                    "qtyUsed",
+                                    e.target.value,
+                                  )
+                                }
+                                className="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                              />
+                            ))}
+                          </div>
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <div className="space-y-1">
+                            {row.materials.map((material, materialIndex) => (
+                              <input
+                                key={materialIndex}
+                                type="text"
+                                value={material.lot}
+                                disabled={isLocked}
+                                onChange={(e) =>
+                                  updateInspectionMaterial(
+                                    row.id,
+                                    materialIndex,
+                                    "lot",
+                                    e.target.value,
+                                  )
+                                }
+                                className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                              />
+                            ))}
+                          </div>
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <div className="space-y-1">
+                            {row.materials.map((material, materialIndex) => (
+                              <input
+                                key={materialIndex}
+                                type="text"
+                                value={material.rollNumber}
+                                disabled={isLocked}
+                                onChange={(e) =>
+                                  updateInspectionMaterial(
+                                    row.id,
+                                    materialIndex,
+                                    "rollNumber",
+                                    e.target.value,
+                                  )
+                                }
+                                className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                              />
+                            ))}
+                          </div>
+                        </td>
+
+                        <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                          <div className="space-y-1">
+                            {row.materials.map((material, materialIndex) => (
+                              <select
+                                key={materialIndex}
+                                value={material.judgment}
+                                disabled={isLocked}
+                                onChange={(e) =>
+                                  updateInspectionMaterial(
+                                    row.id,
+                                    materialIndex,
+                                    "judgment",
+                                    e.target.value,
+                                  )
+                                }
+                                className={`w-20 rounded-lg border px-2 py-1.5 text-xs font-semibold outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${
+                                  material.judgment === "OK"
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                    : material.judgment === "NG"
+                                      ? "border-rose-200 bg-rose-50 text-rose-700"
+                                      : "border-slate-200 bg-white text-slate-500"
+                                }`}
+                              >
+                                <option value="">เลือก</option>
+                                <option value="OK">OK</option>
+                                <option value="NG">NG</option>
+                              </select>
+                            ))}
+                          </div>
+                        </td>
+
+                        <td className="border-b border-slate-100 px-2 py-1.5 text-center">
+                          {isLocked ? (
+                            isViewMode ? (
+                              <span className="inline-flex items-center rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-semibold text-slate-500">
+                                ดูข้อมูล
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => toggleEditRow(row.id)}
+                                className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-amber-400"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                                แก้ไข
+                              </button>
+                            )
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleSaveInspectionRow(row, index)
+                              }
+                              className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-emerald-500"
+                            >
+                              <Save className="w-3.5 h-3.5" />
+
+                              {row.status === "editing" ? "อัพเดท" : "บันทึก"}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {!isViewMode && (
+              <div className="mt-4">
+                <button
+                  type="button"
+                  onClick={addInspectionRow}
+                  className="inline-flex items-center gap-2 rounded-xl border border-dashed border-sky-200 bg-sky-50/60 px-4 py-2 text-xs font-semibold text-sky-700 transition-colors hover:bg-sky-100"
+                >
+                  + เพิ่มม้วน
+                </button>
+              </div>
             )}
           </div>
-          <button
-            type="button"
-            onClick={handleSave}
-            className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded-lg shadow-sm transition-colors"
-          >
-            <Save className="w-4 h-4" />
-            บันทึกรายการนี้
-          </button>
         </div>
       </div>
     </div>
+  );
+}
+
+export default function EmbossFormPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center">
+          <LoaderCircle className="h-6 w-6 animate-spin" />
+        </div>
+      }
+    >
+      <EmbossFormContent />
+    </Suspense>
   );
 }
