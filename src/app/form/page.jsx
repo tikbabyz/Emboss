@@ -25,8 +25,10 @@ import { useSearchParams } from "next/navigation";
 
 const TEMP_STD = 390;
 const THICKNESS_SPEC = { min: 5, max: 6 };
-const WIDTH_SPEC_TOLERANCE = { minus: 0, plus: 50 };
-const LENGTH_SPEC_TOLERANCE = { minus: 0, plus: 5 };
+const DEFAULT_STD_WIDTH = 1100;
+const DEFAULT_STD_LENGTH = 200;
+const WIDTH_SPEC_TOLERANCE = { minus: 5, plus: 5 };
+const LENGTH_SPEC_TOLERANCE = { minus: 5, plus: 5 };
 const TODAY = new Date().toISOString().split("T")[0];
 const LS_KEY = "emboss_records";
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
@@ -83,8 +85,10 @@ const isThicknessOutOfSpec = (value) => {
 
 const isWidthOutOfSpec = (value, stdWidth) => {
   const num = parseSpecNum(value);
-  const std = parseSpecNum(stdWidth);
-  if (Number.isNaN(num) || Number.isNaN(std) || std <= 0) return false;
+  if (Number.isNaN(num)) return false;
+  const parsedStd = parseSpecNum(stdWidth);
+  const std =
+    !Number.isNaN(parsedStd) && parsedStd > 0 ? parsedStd : DEFAULT_STD_WIDTH;
   return (
     num < std - WIDTH_SPEC_TOLERANCE.minus ||
     num > std + WIDTH_SPEC_TOLERANCE.plus
@@ -93,8 +97,10 @@ const isWidthOutOfSpec = (value, stdWidth) => {
 
 const isLengthOutOfSpec = (value, stdLength) => {
   const num = parseSpecNum(value);
-  const std = parseSpecNum(stdLength);
-  if (Number.isNaN(num) || Number.isNaN(std) || std <= 0) return false;
+  if (Number.isNaN(num)) return false;
+  const parsedStd = parseSpecNum(stdLength);
+  const std =
+    !Number.isNaN(parsedStd) && parsedStd > 0 ? parsedStd : DEFAULT_STD_LENGTH;
   return (
     num < std - LENGTH_SPEC_TOLERANCE.minus ||
     num > std + LENGTH_SPEC_TOLERANCE.plus

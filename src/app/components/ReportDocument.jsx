@@ -735,24 +735,36 @@ export const ReportDocument = ({
             <View style={styles.summaryRow}>
               {/* งานเสีย (NG) */}
               <View style={[styles.summaryCol, { width: "36.9%" }]}>
-                <Text style={{ fontSize: 6.8, fontWeight: 700 }}>
+                <Text style={{ fontSize: 7.5, fontWeight: 700 }}>
                   งานเสีย (NG) :{" "}
                 </Text>
-                <Text
+                <View
                   style={{
-                    fontSize: 6.8,
                     flex: 1,
                     borderBottomWidth: 0.5,
                     borderColor: "#000",
                     borderStyle: "dotted",
-                    paddingBottom: 6,
+                    justifyContent: "flex-end",
+                    alignItems: "center",
+                    height: 14,
+                    paddingBottom: 1,
+                    marginHorizontal: 2,
                   }}
                 >
-                  {summary.ngQty ?? ""}
-                </Text>
+                  <Text
+                    style={{
+                      fontSize: 8.5,
+                      fontWeight: 700,
+                      textAlign: "center",
+                      color: "#000",
+                    }}
+                  >
+                    {summary.ngQty ?? ""}
+                  </Text>
+                </View>
                 <Text
                   style={{
-                    fontSize: 6.8,
+                    fontSize: 7.5,
                     fontWeight: 700,
                     marginLeft: 4,
                   }}
@@ -763,24 +775,36 @@ export const ReportDocument = ({
 
               {/* รวมงานดี */}
               <View style={[styles.summaryCol, { width: "35.6%" }]}>
-                <Text style={{ fontSize: 6.8, fontWeight: 700 }}>
+                <Text style={{ fontSize: 7.5, fontWeight: 700 }}>
                   รวมงานดี :{" "}
                 </Text>
-                <Text
+                <View
                   style={{
-                    fontSize: 6.8,
                     flex: 1,
                     borderBottomWidth: 0.5,
                     borderColor: "#000",
                     borderStyle: "dotted",
-                    paddingBottom: 6,
+                    justifyContent: "flex-end",
+                    alignItems: "center",
+                    height: 14,
+                    paddingBottom: 1,
+                    marginHorizontal: 2,
                   }}
                 >
-                  {summary.goodQty ?? ""}
-                </Text>
+                  <Text
+                    style={{
+                      fontSize: 8.5,
+                      fontWeight: 700,
+                      textAlign: "center",
+                      color: "#000",
+                    }}
+                  >
+                    {summary.goodQty ?? ""}
+                  </Text>
+                </View>
                 <Text
                   style={{
-                    fontSize: 6.8,
+                    fontSize: 7.5,
                     fontWeight: 700,
                     marginLeft: 4,
                   }}
@@ -796,25 +820,36 @@ export const ReportDocument = ({
                   { width: "27.5%", borderRightWidth: 0 },
                 ]}
               >
-                <Text style={{ fontSize: 6.8, fontWeight: 700 }}>
+                <Text style={{ fontSize: 7.5, fontWeight: 700 }}>
                   รวมงานผลิตทั้งหมด :{" "}
                 </Text>
-                <Text
+                <View
                   style={{
-                    fontSize: 6.8,
                     flex: 1,
                     borderBottomWidth: 0.5,
                     borderColor: "#000",
                     borderStyle: "dotted",
-                    paddingBottom: 6,
-                    textAlign: "center",
+                    justifyContent: "flex-end",
+                    alignItems: "center",
+                    height: 14,
+                    paddingBottom: 1,
+                    marginHorizontal: 2,
                   }}
                 >
-                  {summary.totalQty ?? ""}
-                </Text>
+                  <Text
+                    style={{
+                      fontSize: 8.5,
+                      fontWeight: 700,
+                      textAlign: "center",
+                      color: "#000",
+                    }}
+                  >
+                    {summary.totalQty ?? ""}
+                  </Text>
+                </View>
                 <Text
                   style={{
-                    fontSize: 6.8,
+                    fontSize: 7.5,
                     fontWeight: 700,
                     marginLeft: 4,
                   }}
@@ -828,59 +863,92 @@ export const ReportDocument = ({
             <View style={styles.signatureRow}>
               {/* Operator */}
               <View style={styles.signatureCol}>
-                <Text style={{ fontSize: 7, fontWeight: 700 }}>
+                <Text style={{ fontSize: 7.5, fontWeight: 700 }}>
                   Operator :{" "}
                 </Text>
-                <Text
+                <View
                   style={{
-                    fontSize: 7,
                     flex: 1,
                     borderBottomWidth: 0.5,
                     borderColor: "#000",
                     borderStyle: "dotted",
-                    paddingBottom: 6,
+                    justifyContent: "flex-end",
+                    alignItems: "center",
+                    height: 16,
+                    paddingBottom: 1,
+                    marginHorizontal: 2,
                   }}
                 >
-                  {summary.operatorSign ?? ""}
-                </Text>
+                  <Text
+                    style={{
+                      fontSize: 8,
+                      textAlign: "center",
+                      color: "#000",
+                    }}
+                  >
+                    {summary.operatorSign ?? ""}
+                  </Text>
+                </View>
               </View>
 
               {/* Foreman */}
               <View style={styles.signatureCol}>
-                <Text style={{ fontSize: 7, fontWeight: 700 }}>
+                <Text style={{ fontSize: 7.5, fontWeight: 700 }}>
                   Foreman :{" "}
                 </Text>
-                <Text
+                <View
                   style={{
-                    fontSize: 7,
                     flex: 1,
                     borderBottomWidth: 0.5,
                     borderColor: "#000",
                     borderStyle: "dotted",
-                    paddingBottom: 6,
+                    justifyContent: "flex-end",
+                    alignItems: "center",
+                    height: 16,
+                    paddingBottom: 1,
+                    marginHorizontal: 2,
                   }}
                 >
-                  {summary.foremanSign ?? ""}
-                </Text>
+                  <Text
+                    style={{
+                      fontSize: 8,
+                      textAlign: "center",
+                      color: "#000",
+                    }}
+                  >
+                    {summary.foremanSign ?? ""}
+                  </Text>
+                </View>
               </View>
 
               {/* Manager */}
               <View style={[styles.signatureCol, { borderRightWidth: 0 }]}>
-                <Text style={{ fontSize: 7, fontWeight: 700 }}>
+                <Text style={{ fontSize: 7.5, fontWeight: 700 }}>
                   Manager :{" "}
                 </Text>
-                <Text
+                <View
                   style={{
-                    fontSize: 7,
                     flex: 1,
                     borderBottomWidth: 0.5,
                     borderColor: "#000",
                     borderStyle: "dotted",
-                    paddingBottom: 6,
+                    justifyContent: "flex-end",
+                    alignItems: "center",
+                    height: 16,
+                    paddingBottom: 1,
+                    marginHorizontal: 2,
                   }}
                 >
-                  {summary.managerSign ?? ""}
-                </Text>
+                  <Text
+                    style={{
+                      fontSize: 8,
+                      textAlign: "center",
+                      color: "#000",
+                    }}
+                  >
+                    {summary.managerSign ?? ""}
+                  </Text>
+                </View>
               </View>
             </View>
           </View>
